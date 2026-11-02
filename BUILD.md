@@ -1,4 +1,4 @@
-# cps-pi - how to build (version 0.2.0)
+# cps-pi - how to build (version 0.3.0)
 
 Build host: Windows (Git Bash) or Linux. Everything lives in this directory;
 nothing is installed system wide.

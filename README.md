@@ -49,12 +49,15 @@ build directory and drops in cps-pi's own `libretro/platform.h`.
 - Game list from `cpspi/roms/*.zip`, titles from NJEMU's database, last game
   remembered, clones shown only when their parent is present.
 - The 384x224 picture shown as on the arcade monitor, 4:3 (1195x896 at
-  1080p: integer 4x vertically, the horizontal stretch done by the hardware
-  scaler, so it costs nothing), or with square pixels; vsync paced at 60 Hz;
-  scanline filters in three strengths (medium by default), fine on a Pi 3.
-- Frame delay: the inputs are read and the frame emulated as late as
-  possible after vsync (automatic, from the measured frame times), which
-  takes about 10 ms off the input lag.
+  1080p: integer 4x vertically, the 384 columns mapped onto 1195 by the CPU
+  at the full resolution), or with square pixels (integer scale, hardware
+  scaler); vsync paced at 60 Hz; scanline filters in three strengths
+  (medium by default), fine on a Pi 3.
+- Low input lag: the pads are sampled at the emulated vblank, the moment the
+  game's interrupt handler reads the input ports (a frame fresher than the
+  usual latch at the start of the frame), and a frame delay runs the
+  emulation as late as possible after vsync (automatic, from the measured
+  frame times).
 - HDMI audio at 48 kHz; the chips run at their native 44.1 kHz (YM2151 + OKI)
   or 24 kHz (QSound) and are resampled.
 - USB gamepads (six buttons, Start, Select) and keyboard, USB polled every

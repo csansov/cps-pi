@@ -100,6 +100,56 @@ extern "C" void cpspi_delay_us (unsigned nMicros)
 	}
 }
 
+// ---- late input sampling --------------------------------------------------
+// The core calls LateInputs at its emulated vblank, right before the game's
+// interrupt handler reads the input ports: the pads (kept current by the USB
+// interrupts) are sampled at that moment instead of at the start of the frame.
+// The game loop decides per frame which pads are ignored (buttons still held
+// from a menu) and the extra bits of the frame (coin pulse, TEST switch).
+
+static CInput *s_pLateInput;
+static volatile boolean s_bLateEnabled;
+static volatile boolean s_LateIgnore[CORE_MAX_PLAYERS];
+static volatile u32 s_LateExtra[CORE_MAX_PLAYERS];
+
+// pad bits -> core flags; while Select is held only the joystick goes through
+static u32 GameFlags (u32 n)
+{
+	u32 nGame = (n & BTN_SELECT) ? (n & 0x0F) : n;
+	u32 f = 0;
+	if (nGame & BTN_UP)	f |= CORE_IN_UP;
+	if (nGame & BTN_DOWN)	f |= CORE_IN_DOWN;
+	if (nGame & BTN_LEFT)	f |= CORE_IN_LEFT;
+	if (nGame & BTN_RIGHT)	f |= CORE_IN_RIGHT;
+	if (nGame & BTN_1)	f |= CORE_IN_B1;
+	if (nGame & BTN_2)	f |= CORE_IN_B2;
+	if (nGame & BTN_3)	f |= CORE_IN_B3;
+	if (nGame & BTN_4)	f |= CORE_IN_B4;
+	if (nGame & BTN_5)	f |= CORE_IN_B5;
+	if (nGame & BTN_6)	f |= CORE_IN_B6;
+	if (nGame & BTN_START)	f |= CORE_IN_START;
+	return f;
+}
+
+static void LateInputs (void)
+{
+	if (!s_bLateEnabled || s_pLateInput == 0)
+	{
+		return;
+	}
+	for (unsigned p = 0; p < CORE_MAX_PLAYERS; p++)
+	{
+		if (s_LateIgnore[p])
+		{
+			core_set_input (p, 0);
+		}
+		else
+		{
+			core_set_input (p, GameFlags (s_pLateInput->Get (p)) | s_LateExtra[p]);
+		}
+	}
+}
+
 // ---- helpers --------------------------------------------------------------
 
 static void FormatMs (char *pOut, size_t nSize, unsigned nMicros)
@@ -796,6 +846,7 @@ void CKernel::Benchmark (void)
 	Log ("Benchmark: warm-up", COLOR_TEXT);
 	SaveLog ();
 
+	s_bLateEnabled = FALSE;
 	for (unsigned p = 0; p < CORE_MAX_PLAYERS; p++) core_set_input (p, 0);
 	for (unsigned i = 0; i < BENCH_WARMUP; i++)
 	{
@@ -1084,11 +1135,12 @@ void CKernel::ApplyVideoMode (void)
 	char Tag[8];
 	VideoModeTag (Tag, sizeof Tag);
 	char Line[MaxLineLen];
-	snprintf (Line, sizeof Line, "Video: mode %s, HDMI %ux%u, framebuffer %ux%u, picture %ux%u (%s), vertical %ux (HVS %ux, CPU %ux), CPU x%u, filter %s%s",
+	snprintf (Line, sizeof Line, "Video: mode %s, HDMI %ux%u, framebuffer %ux%u, picture %ux%u (%s), vertical %ux (HVS %ux, CPU %ux), filter %s%s",
 		  Tag, m_Video.GetWidth (), m_Video.GetHeight (),
 		  m_Video.GetFBWidth (), m_Video.GetFBHeight (),
-		  m_Video.GetScreenGameW (), m_Video.GetScreenGameH (), m_Video.IsAspect43 () ? "4:3" : "square pixels",
-		  m_Video.GetScale (), m_Video.GetHVSFactor (), m_Video.GetCPUScaleY (), m_Video.GetCPUScaleX (),
+		  m_Video.GetScreenGameW (), m_Video.GetScreenGameH (),
+		  m_Video.IsAspect43 () ? "4:3, columns mapped by the CPU" : "square pixels",
+		  m_Video.GetScale (), m_Video.GetHVSFactor (), m_Video.GetCPUScaleY (),
 		  FilterName (m_Video.GetFilter ()), m_bHVS ? "" : " (scaler=cpu)");
 	Log (Line, COLOR_TEXT);
 	snprintf (Line, sizeof Line, "Video: pixel order %s (%u), red in the %s byte",
@@ -1657,6 +1709,12 @@ void CKernel::RunGame (void)
 	unsigned nDelayUs = m_nFrameDelay > 1 ? m_nFrameDelay : 0;
 	unsigned nWorkMaxPrev = 0;
 	s_nFrameDelayNow = nDelayUs;
+	for (unsigned p = 0; p < CORE_MAX_PLAYERS; p++)
+	{
+		s_LateIgnore[p] = TRUE;
+		s_LateExtra[p] = 0;
+	}
+	s_bLateEnabled = TRUE;
 
 	ResetGameStats ();
 	{
@@ -1720,9 +1778,11 @@ void CKernel::RunGame (void)
 					{
 						nPrev[p] = 0;
 					}
+					s_LateIgnore[p] = TRUE;
 					core_set_input (p, 0);
 					continue;
 				}
+				s_LateIgnore[p] = FALSE;
 
 				u32 nNew = n & ~nPrev[p];
 
@@ -1768,23 +1828,12 @@ void CKernel::RunGame (void)
 				}
 				nPrev[p] = n;
 
-				// CPS1 inputs: while Select is held only the joystick goes through
-				u32 nGame = (n & BTN_SELECT) ? (n & 0x0F) : n;
-				u32 nFlags = 0;
-				if (nGame & BTN_UP)	nFlags |= CORE_IN_UP;
-				if (nGame & BTN_DOWN)	nFlags |= CORE_IN_DOWN;
-				if (nGame & BTN_LEFT)	nFlags |= CORE_IN_LEFT;
-				if (nGame & BTN_RIGHT)	nFlags |= CORE_IN_RIGHT;
-				if (nGame & BTN_1)	nFlags |= CORE_IN_B1;
-				if (nGame & BTN_2)	nFlags |= CORE_IN_B2;
-				if (nGame & BTN_3)	nFlags |= CORE_IN_B3;
-				if (nGame & BTN_4)	nFlags |= CORE_IN_B4;
-				if (nGame & BTN_5)	nFlags |= CORE_IN_B5;
-				if (nGame & BTN_6)	nFlags |= CORE_IN_B6;
-				if (nGame & BTN_START)	nFlags |= CORE_IN_START;
-				if (nCoin[p]) { nFlags |= CORE_IN_COIN; nCoin[p]--; }
-				if (p == 0 && nTestFrames) { nFlags |= CORE_IN_TEST; nTestFrames--; }
-				core_set_input (p, nFlags);
+				// CPS1 inputs now (the core samples them again at its vblank)
+				u32 nExtra = 0;
+				if (nCoin[p]) { nExtra |= CORE_IN_COIN; nCoin[p]--; }
+				if (p == 0 && nTestFrames) { nExtra |= CORE_IN_TEST; nTestFrames--; }
+				s_LateExtra[p] = nExtra;
+				core_set_input (p, GameFlags (n) | nExtra);
 			}
 
 			if (bOpenMenu || bOpenCredits)
@@ -1839,6 +1888,7 @@ void CKernel::RunGame (void)
 				{
 					Log ("  the core stopped with an error, back to the list", COLOR_ERR);
 					SaveLog ();
+					s_bLateEnabled = FALSE;
 					UnloadGame ();
 					return;
 				}
@@ -1877,6 +1927,7 @@ void CKernel::RunGame (void)
 
 				case GmList:
 					SaveLog ();
+					s_bLateEnabled = FALSE;
 					return;
 
 				case GmPower:
@@ -2132,6 +2183,8 @@ TShutdownMode CKernel::Run (void)
 	{
 		Fatal (CPSPI_ERR_CORE, "the emulator core did not initialise");
 	}
+	s_pLateInput = m_pInput;
+	core_set_input_callback (LateInputs);
 
 	// last played game
 	unsigned nSel = 0;

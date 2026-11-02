@@ -30,6 +30,8 @@ for P in $TARGETS; do
 	# the core: a private copy, with our platform header in place of the libretro one
 	cp -r "$NJSRC" "$B/njemu"
 	cp "$ROOT/src/libretro/platform.h" "$B/njemu/libretro/platform.h"
+	# controls sampled at the emulated vblank, when the game reads them
+	python "$ROOT/patches/njemu-vblank-input.py" "$B/njemu/cps1/driver.c"
 	CIRCLE="$ROOTW/circle"
 	[ "$P" = "4" ] && CIRCLE="$ROOTW/circle-rpi4"
 	sed "s|@CIRCLEHOME@|$CIRCLE|; s|@SRC@|$ROOTW/src|; s|@MINIZ@|$ROOTW/third_party/miniz|" \

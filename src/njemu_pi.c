@@ -436,12 +436,29 @@ void lr_audio_frame(void)
 ******************************************************************************/
 
 static uint32_t s_input[CORE_MAX_PLAYERS];
+static void (*s_input_callback)(void);
 
 void lr_input_flags(uint8_t *f, unsigned player)
 {
 	memset(f, 0, MAX_INPUTS);
 	uint32_t v = player < CORE_MAX_PLAYERS ? s_input[player] : 0;
 	for (unsigned i = 0; i < 16; i++) f[i] = (v >> i) & 1;
+}
+
+/* At the emulated vblank (patches/njemu-vblank-input.py), right before the
+   interrupt whose handler reads the input ports: the kernel samples the pads
+   now and the ports are latched again, so the game sees controls that are a
+   frame fresher than those latched at the start of the frame. */
+void lr_vblank_input(void)
+{
+	if (!s_input_callback) return;
+	s_input_callback();
+	update_inputport();
+}
+
+void core_set_input_callback(void (*callback)(void))
+{
+	s_input_callback = callback;
 }
 
 uint32_t poll_gamepad(void) { return 0; }

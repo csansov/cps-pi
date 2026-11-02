@@ -22,6 +22,8 @@ void lr_machine_unload(void);
 void lr_audio_frame(void);
 void lr_audio_reset(void);
 void lr_options(void);
+/* cps-pi: called by the core at the emulated vblank, before the interrupt */
+void lr_vblank_input(void);
 extern unsigned lr_width, lr_height;
 extern uint64_t lr_frame_number;
 extern unsigned lr_audio_rate;

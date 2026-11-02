@@ -141,6 +141,7 @@ private:
 	u32	*m_pLine;			// one scaled game line (cached memory)
 	u32	*m_pDark;			// the same line darkened (scanlines)
 	u32	*m_pLUT;			// BGR555 -> framebuffer pixel (32768 entries)
+	u16	*m_pColMap;			// 4:3: source column of each picture column on screen
 	unsigned m_nPixelOrder;			// reported by the firmware
 	boolean	 m_bRLow;			// red in the low byte of a pixel
 };

@@ -38,6 +38,7 @@ CVideoOut::CVideoOut (void)
 	m_pLine (0),
 	m_pDark (0),
 	m_pLUT (0),
+	m_pColMap (0),
 	m_nPixelOrder (1),
 	m_bRLow (TRUE)
 {
@@ -49,6 +50,7 @@ CVideoOut::~CVideoOut (void)
 	delete [] m_pLine;
 	delete [] m_pDark;
 	delete [] m_pLUT;
+	delete [] m_pColMap;
 }
 
 // BGR555 (R in bits 0-4, G 5-9, B 10-14) -> framebuffer pixel
@@ -131,7 +133,8 @@ boolean CVideoOut::Initialize (void)
 	m_pLine = new u32[MAX_LINE];
 	m_pDark = new u32[MAX_LINE];
 	m_pLUT = new u32[32768];
-	if (m_pLine == 0 || m_pDark == 0 || m_pLUT == 0)
+	m_pColMap = new u16[MAX_LINE];
+	if (m_pLine == 0 || m_pDark == 0 || m_pLUT == 0 || m_pColMap == 0)
 	{
 		return FALSE;
 	}
@@ -165,15 +168,17 @@ boolean CVideoOut::SetGameMode (unsigned nFilter, boolean bAllowHVS, boolean bAs
 	m_nScale = S;
 	m_nScreenW = nScreenW;
 
-	// HVS factor k (vertical): largest divisor of S that divides the display
-	// exactly; with a filter the CPU must draw at least 2x (m >= 2)
+	// HVS factor k: largest divisor of S that divides the display exactly;
+	// with a filter the CPU must draw at least 2x (m >= 2). 4:3 is drawn by
+	// the CPU at the full resolution (k = 1): the firmware keeps the
+	// framebuffer's proportions when it scales, so it cannot stretch for us,
+	// and a fractional horizontal scale is only even enough at 1:1.
 	m_nK = 1;
-	if (bAllowHVS)
+	if (bAllowHVS && !bAspect43)
 	{
 		for (unsigned k = S; k >= 2; k--)
 		{
-			if (   S % k == 0 && m_nDispH % k == 0
-			    && (bAspect43 || m_nDispW % k == 0)
+			if (   S % k == 0 && m_nDispH % k == 0 && m_nDispW % k == 0
 			    && (m_nFilter == FILTER_NONE || S / k >= 2))
 			{
 				m_nK = k;
@@ -182,38 +187,33 @@ boolean CVideoOut::SetGameMode (unsigned nFilter, boolean bAllowHVS, boolean bAs
 		}
 	}
 	m_nM = S / m_nK;
+	m_nMX = bAspect43 ? 0 : m_nM;		// 0: column map instead of a factor
 
-	// horizontal: square pixels = the same factors; 4:3 = the CPU draws the
-	// picture mx times wider (never wider than it will be on screen) and the
-	// framebuffer width makes the HVS stretch it to nScreenW
-	unsigned nFbH = m_nDispH / m_nK, nFbW;
-	if (!bAspect43)
-	{
-		m_nMX = m_nM;
-		nFbW = m_nDispW / m_nK;
-	}
-	else
-	{
-		m_nMX = m_nM;
-		while (m_nMX > 1 && GAME_W * m_nMX > nScreenW) m_nMX--;
-		nFbW = (m_nDispW * GAME_W * m_nMX + nScreenW / 2) / nScreenW;
-		nFbW = (nFbW + 1) & ~1u;
-		if (nFbW > m_nDispW) nFbW = m_nDispW;
-	}
+	unsigned nFbW = m_nDispW / m_nK, nFbH = m_nDispH / m_nK;
 	if (!Allocate (nFbW, nFbH))
 	{
-		// fall back to the full resolution: CPU scaling, square pixels
+		// fall back to the full resolution, CPU only
 		m_nK = 1;
-		m_nM = m_nMX = S;
-		m_bAspect43 = FALSE;
-		m_nScreenW = GAME_W * S;
+		m_nM = S;
+		m_nMX = bAspect43 ? 0 : S;
 		if (!Allocate (m_nDispW, m_nDispH))
 		{
 			return FALSE;
 		}
 	}
 
-	unsigned nGameW = GAME_W * m_nMX, nGameH = GAME_H * m_nM;
+	// 4:3: source column of each of the nScreenW picture columns (sampled at
+	// the column centre); 384 columns over 1195 at 1080p = 3 or 4 pixels each
+	if (bAspect43)
+	{
+		for (unsigned x = 0; x < nScreenW && x < MAX_LINE; x++)
+		{
+			unsigned nSrc = ((2 * x + 1) * GAME_W) / (2 * nScreenW);
+			m_pColMap[x] = (u16) (nSrc < GAME_W ? nSrc : GAME_W - 1);
+		}
+	}
+
+	unsigned nGameW = bAspect43 ? nScreenW : GAME_W * m_nMX, nGameH = GAME_H * m_nM;
 	m_nGameX = (m_nWidth - nGameW) / 2;
 	m_nGameY = (m_nHeight - nGameH) / 2;
 
@@ -325,7 +325,7 @@ void CVideoOut::DrawGame (const u16 *pSource, boolean bFlip)
 void CVideoOut::DrawGameLine (const u16 *pSource, unsigned y, u32 *pLine, u32 *pDark, boolean bFlip)
 {
 	const unsigned M = m_nM, MX = m_nMX;
-	const unsigned nGameW = GAME_W * MX;
+	const unsigned nGameW = MX ? GAME_W * MX : m_nScreenW;
 
 	// scanlines: bottom rows of each group darker (2 of 4 at 4x, 1 of 2 or 3)
 	const unsigned nDarkRows = m_nFilter != FILTER_NONE ? (M >= 4 ? M / 2 : (M >= 2 ? 1 : 0)) : 0;
@@ -336,7 +336,26 @@ void CVideoOut::DrawGameLine (const u16 *pSource, unsigned y, u32 *pLine, u32 *p
 	const u16 *pSrc = pSource + (GAME_SRC_Y + nSrcY) * GAME_SRC_PITCH + GAME_SRC_X;
 	const u32 *pLUT = m_pLUT;
 	u32 *pDst = pLine;
-	if (bFlip)
+	if (MX == 0)
+	{
+		// 4:3: the column map (nearest source column of each screen column)
+		const u16 *pMap = m_pColMap;
+		if (bFlip)
+		{
+			for (unsigned x = 0; x < nGameW; x++)
+			{
+				*pDst++ = pLUT[pSrc[GAME_W - 1 - pMap[x]] & 0x7FFF];
+			}
+		}
+		else
+		{
+			for (unsigned x = 0; x < nGameW; x++)
+			{
+				*pDst++ = pLUT[pSrc[pMap[x]] & 0x7FFF];
+			}
+		}
+	}
+	else if (bFlip)
 	{
 		for (unsigned x = 0; x < GAME_W; x++)
 		{
