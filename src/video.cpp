@@ -6,6 +6,7 @@
 #include <circle/bcmpropertytags.h>
 #include <circle/font.h>
 #include <circle/util.h>
+#include <circle/synchronize.h>
 
 #define PROPTAG_RELEASE_BUFFER	0x00048001
 #define PROPTAG_GET_PIXEL_ORDER	0x00040006	// 0 = BGR, 1 = RGB
@@ -40,6 +41,7 @@ CVideoOut::CVideoOut (void)
 	m_pLUT (0),
 	m_pColMap (0),
 	m_pColWeight (0),
+	m_pSrcLine (0),
 	m_nPixelOrder (1),
 	m_bRLow (TRUE)
 {
@@ -53,6 +55,7 @@ CVideoOut::~CVideoOut (void)
 	delete [] m_pLUT;
 	delete [] m_pColMap;
 	delete [] m_pColWeight;
+	delete [] m_pSrcLine;
 }
 
 // BGR555 (R in bits 0-4, G 5-9, B 10-14) -> framebuffer pixel
@@ -137,7 +140,9 @@ boolean CVideoOut::Initialize (void)
 	m_pLUT = new u32[32768];
 	m_pColMap = new u16[MAX_LINE];
 	m_pColWeight = new u8[MAX_LINE];
-	if (m_pLine == 0 || m_pDark == 0 || m_pLUT == 0 || m_pColMap == 0 || m_pColWeight == 0)
+	m_pSrcLine = new u32[GAME_W + 1];
+	if (m_pLine == 0 || m_pDark == 0 || m_pLUT == 0 || m_pColMap == 0 || m_pColWeight == 0
+	    || m_pSrcLine == 0)
 	{
 		return FALSE;
 	}
@@ -242,7 +247,7 @@ boolean CVideoOut::SetGameMode (unsigned nFilter, boolean bAllowHVS, unsigned nA
 	m_nScreenW = nScreenW;
 
 	unsigned nGameW = nFbGameW, nGameH = GAME_H * m_nM;
-	m_nGameX = (m_nWidth - nGameW) / 2;
+	m_nGameX = ((m_nWidth - nGameW) / 2) & ~3u;	// 16 byte aligned rows for the copies
 	m_nGameY = (m_nHeight - nGameH) / 2;
 
 	// text in the black bands: 8x8 menu font, 16 px high on screen where possible
@@ -366,25 +371,36 @@ void CVideoOut::DrawGameLine (const u16 *pSource, unsigned y, u32 *pLine, u32 *p
 	u32 *pDst = pLine;
 	if (MX == 0)
 	{
-		// 4:3: the column map, each column a blend of source column i and
-		// i + 1 with weight w / 256 (w = 0: sharp); the two 16 bit lanes
-		// trick blends the four bytes of a pixel with two multiplies
+		// 4:3: the 384 source pixels are converted once into a small cached
+		// line (the 128 KB colour table is what misses the cache), then each
+		// framebuffer column is a blend of source columns i and i + 1 with
+		// weight w / 256 (w = 0 reproduces column i exactly: no branch); the
+		// two 16 bit lanes trick blends the four bytes with two multiplies
+		u32 *pConv = m_pSrcLine;
+		if (bFlip)
+		{
+			for (unsigned x = 0; x < GAME_W; x++)
+			{
+				pConv[x] = pLUT[pSrc[GAME_W - 1 - x] & 0x7FFF];
+			}
+		}
+		else
+		{
+			for (unsigned x = 0; x < GAME_W; x++)
+			{
+				pConv[x] = pLUT[pSrc[x] & 0x7FFF];
+			}
+		}
+		pConv[GAME_W] = pConv[GAME_W - 1];
 		const u16 *pMap = m_pColMap;
 		const u8 *pW = m_pColWeight;
 		for (unsigned x = 0; x < nGameW; x++)
 		{
-			unsigned i = pMap[x], w = pW[x];
-			u32 a = pLUT[pSrc[bFlip ? GAME_W - 1 - i : i] & 0x7FFF];
-			if (w == 0)
-			{
-				*pDst++ = a;
-				continue;
-			}
-			u32 b = pLUT[pSrc[bFlip ? GAME_W - 2 - i : i + 1] & 0x7FFF];
-			unsigned iw = 256 - w;
+			unsigned i = pMap[x], w = pW[x], iw = 256 - w;
+			u32 a = pConv[i], b = pConv[i + 1];
 			u32 rb = ((a & 0x00FF00FFu) * iw + (b & 0x00FF00FFu) * w) >> 8;
 			u32 ga = (((a >> 8) & 0x00FF00FFu) * iw + ((b >> 8) & 0x00FF00FFu) * w) >> 8;
-			*pDst++ = (rb & 0x00FF00FFu) | ((ga & 0x00FF00FFu) << 8);
+			pDst[x] = (rb & 0x00FF00FFu) | ((ga & 0x00FF00FFu) << 8);
 		}
 	}
 	else if (bFlip)
@@ -534,12 +550,16 @@ void CVideoOut::DrawBandText (boolean bTop, const TTextSpan *pSpans, unsigned nS
 
 void CVideoOut::ShowBuffer (unsigned nBuffer)
 {
+	DataSyncBarrier ();
 	m_pFrameBuffer->SetVirtualOffset (0, nBuffer * m_nHeight);
 	m_nBack = nBuffer ^ 1;
 }
 
 boolean CVideoOut::Flip (void)
 {
+	// the framebuffer is Normal non-cacheable memory (patches/circle-fb-normal-nc.py):
+	// every store must have left the write buffer before the GPU is told
+	DataSyncBarrier ();
 	boolean bOK = m_pFrameBuffer->SetVirtualOffset (0, m_nBack * m_nHeight);
 	m_nBack ^= 1;
 	return bOK;

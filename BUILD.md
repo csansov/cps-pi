@@ -1,4 +1,4 @@
-# cps-pi - how to build (version 0.3.1)
+# cps-pi - how to build (version 0.3.2)
 
 Build host: Windows (Git Bash) or Linux. Everything lives in this directory;
 nothing is installed system wide.
@@ -26,6 +26,11 @@ nothing is installed system wide.
 
        python patches/circle-usb-poll.py circle
        python patches/circle-xinput.py circle
+       python patches/circle-fb-normal-nc.py circle
+
+   The third one is cps-pi's own: the GPU memory holding the framebuffer is
+   mapped as Normal non-cacheable instead of Device memory, so the CPU can
+   merge its stores (a Pi 3 wrote the picture at about 430 MB/s before).
 
    then, with the toolchain in the PATH, `./makeall` in `circle/` and `make`
    in `circle/addon/SDCard` and `circle/addon/fatfs`.
