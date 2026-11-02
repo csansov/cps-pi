@@ -1,0 +1,11 @@
+build/
+toolchain/
+circle/
+circle-rpi4/
+third_party/njemu-*/
+dist/sd/kernel8*.img
+dist/*.zip
+dist/sd/cpspi/roms/*.zip
+dist/sd/cpspi/nvram/
+dist/sd/cpspi/shots/
+*.log

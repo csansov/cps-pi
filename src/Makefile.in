@@ -1,0 +1,58 @@
+#
+# cps-pi Makefile (generated per target by build.sh)
+#
+CIRCLEHOME = @CIRCLEHOME@
+SRC = @SRC@
+MINIZ = @MINIZ@
+NJ = njemu
+
+# the NJEMU CPS1 core (same file list as its libretro build, minus the
+# libretro frontend files, which njemu_pi.c replaces)
+NJ_OBJS = $(NJ)/desktop/desktop_ui_text.o $(NJ)/common/ui_text_driver.o \
+	  $(NJ)/common/loadrom.o $(NJ)/common/cache.o \
+	  $(NJ)/zip/zfile.o $(NJ)/zip/unzip.o $(NJ)/sound/sndintrf.o \
+	  $(NJ)/cpu/m68000/m68000.o $(NJ)/cpu/m68000/c68k.o \
+	  $(NJ)/cpu/z80/z80.o $(NJ)/cpu/z80/cz80.o \
+	  $(NJ)/cps1/cps1.o $(NJ)/cps1/driver.o $(NJ)/cps1/memintrf.o \
+	  $(NJ)/cps1/inptport.o $(NJ)/cps1/timer.o $(NJ)/cps1/vidhrdw.o \
+	  $(NJ)/cps1/sprite_common.o $(NJ)/cps1/desktop_sprite.o \
+	  $(NJ)/common/coin.o $(NJ)/cps1/eeprom.o $(NJ)/sound/qsound.o \
+	  $(NJ)/cps1/dipsw.o $(NJ)/cps1/kabuki.o \
+	  $(NJ)/sound/2151intf.o $(NJ)/sound/ym2151.o
+
+OBJS	= main.o kernel.o profile.o video.o fontdata.o input.o audio.o ui.o \
+	  shim.o pi_file.o png.o miniz.o njemu_pi.o $(NJ_OBJS)
+
+LIBS	= $(CIRCLEHOME)/addon/fatfs/libfatfs.a \
+	  $(CIRCLEHOME)/addon/SDCard/libsdcard.a \
+	  $(CIRCLEHOME)/lib/usb/libusb.a \
+	  $(CIRCLEHOME)/lib/input/libinput.a \
+	  $(CIRCLEHOME)/lib/sound/libsound.a \
+	  $(CIRCLEHOME)/lib/fs/libfs.a \
+	  $(CIRCLEHOME)/lib/libcircle.a
+
+EXTRAINCLUDE = -I $(NJ) -I $(NJ)/zip -I $(NJ)/cps1 -I $(SRC) -I $(SRC)/compat -I $(MINIZ)
+
+C_STANDARD = -std=gnu11
+OPTIMIZE = -O2
+
+DEFINE += -DNDEBUG -DMINIZ_NO_STDIO -DMINIZ_NO_TIME
+CFLAGS += -fno-math-errno -fno-strict-aliasing -Wno-unused-parameter -Wno-sign-compare \
+	  -Wno-unused-variable -Wno-unused-function -Wno-unused-but-set-variable \
+	  -Wno-missing-field-initializers -Wno-implicit-fallthrough
+
+include $(CIRCLEHOME)/Rules.mk
+
+# the core and its glue: NJEMU's frontend-driven build configuration
+NJ_DEFINE = -DLIBRETRO -DBUILD_CPS1 -DNO_GUI -DRELEASE=0 -DVERSION_MAJOR=2 -DVERSION_MINOR=4 \
+	    -DVERSION_BUILD=0 -DVERSION_STR=\"2.4\" -DTARGET_STR=\"CPS1\" -D_DEFAULT_SOURCE
+$(NJ_OBJS) njemu_pi.o: DEFINE += $(NJ_DEFINE)
+$(NJ_OBJS): CFLAGS += -Wno-implicit-int -Wno-implicit-function-declaration -Wno-int-conversion \
+		      -Wno-pointer-sign -Wno-format -Wno-parentheses -Wno-maybe-uninitialized \
+		      -Wno-array-bounds -Wno-stringop-overflow -Wno-misleading-indentation
+
+# the emulator core is where the time goes: optimise it harder
+NJ_OPTIMIZE ?= -O3
+$(NJ_OBJS): OPTIMIZE = $(NJ_OPTIMIZE)
+
+-include $(DEPS)
