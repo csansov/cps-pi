@@ -72,6 +72,8 @@ const char *core_error (void);
 void core_set_dips (unsigned a, unsigned b, unsigned c);
 /* sound chip: 0 = YM2151 (+OKI), 1 = QSound */
 int core_qsound (void);
+/* 68000 clock of the loaded game in MHz (10, or 12 on the later boards) */
+unsigned core_m68k_mhz (void);
 const char *core_game_name (void);
 
 #ifdef __cplusplus

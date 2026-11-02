@@ -46,7 +46,10 @@ void cpspi_png_free (void *p);
 #define BENCH_PROFILE_US 200		// profiler: one sample every 200 us
 #define BENCH_SLOW_US	16000		// frames from 16 ms on count as slow
 #define REPORT_FRAMES	3600		// one statistics line per minute of play
-#define FRAME_US	16667
+// the CPS1 frame: 262 lines of 512 pixel clocks at 8 MHz = 16768 us, 59.637 Hz;
+// the HDMI mode in config.txt runs at that rate and the core emulates it
+#define FRAME_US	16768
+#define CPS1_FPS100	5964		// 59.64 fps
 
 #define COLOR_TEXT	RGB (220, 220, 220)
 #define COLOR_TITLE	RGB (255, 200, 0)
@@ -111,6 +114,8 @@ static CInput *s_pLateInput;
 static volatile boolean s_bLateEnabled;
 static volatile boolean s_LateIgnore[CORE_MAX_PLAYERS];
 static volatile u32 s_LateExtra[CORE_MAX_PLAYERS];
+static boolean s_bLateChange;		// lag measurement: a pad report changed the
+static unsigned s_nLateChangeTicks;	// controls sampled at this vblank (its time)
 
 // pad bits -> core flags; while Select is held only the joystick goes through
 static u32 GameFlags (u32 n)
@@ -136,6 +141,12 @@ static void LateInputs (void)
 	if (!s_bLateEnabled || s_pLateInput == 0)
 	{
 		return;
+	}
+	unsigned nTicks;
+	if (s_pLateInput->TakeChange (&nTicks))
+	{
+		s_nLateChangeTicks = nTicks;
+		s_bLateChange = TRUE;
 	}
 	for (unsigned p = 0; p < CORE_MAX_PLAYERS; p++)
 	{
@@ -714,8 +725,8 @@ boolean CKernel::LoadGame (unsigned nIndex)
 		return FALSE;
 	}
 	unsigned nMs = (CTimer::GetClockTicks () - nStart) / 1000;
-	snprintf (Line, sizeof Line, "  loaded in %u ms: %u players, %u buttons, %s%s", nMs,
-		  core_players (), core_buttons (), core_qsound () ? "QSound" : "YM2151 + OKI",
+	snprintf (Line, sizeof Line, "  loaded in %u ms: %u players, %u buttons, 68000 at %u MHz, %s%s", nMs,
+		  core_players (), core_buttons (), core_m68k_mhz (), core_qsound () ? "QSound" : "YM2151 + OKI",
 		  core_vertical () ? ", vertical screen" : "");
 	Log (Line, COLOR_DIM);
 	m_nLoaded = (int) nIndex;
@@ -975,7 +986,7 @@ void CKernel::Benchmark (void)
 	FormatMs (c, sizeof c, T.nMax); FormatMs (d, sizeof d, T.nMin);
 	snprintf (Line, sizeof Line, "  total                   %7s %7s %7s %7s", a, b, c, d);
 	REPORT (COLOR_TEXT);
-	snprintf (Line, sizeof Line, "Top speed: %u%% of a real CPS1 (100%% = 60 fps)", nSpeed);
+	snprintf (Line, sizeof Line, "Top speed: %u%% of a real CPS1 (100%% = 59.64 fps)", nSpeed);
 	REPORT (nSpeed >= 150 ? COLOR_OK : COLOR_ERR);
 	snprintf (Line, sizeof Line, "Frames over 16.7 ms (too slow for full speed): %u of %u (%u.%u%%)",
 		  nOver, BENCH_FRAMES, nOver * 100 / BENCH_FRAMES, (nOver * 1000 / BENCH_FRAMES) % 10);
@@ -1771,9 +1782,8 @@ void CKernel::RunGame (void)
 			}
 		}
 
-		// read controls as late as possible, right before emulating the frame
-		unsigned nChangeTicks;
-		boolean bChange = m_pInput->TakeChange (&nChangeTicks);
+		// the controls now (menus, combinations); the game itself gets them
+		// again at its vblank (LateInputs), where the lag is measured from
 		u32 Pad[CORE_MAX_PLAYERS];
 		for (unsigned p = 0; p < CORE_MAX_PLAYERS; p++)
 		{
@@ -2050,9 +2060,11 @@ void CKernel::RunGame (void)
 			s_HistWork.Add (t2 - t0);
 			s_HistPeriod.Add (nPeriod);
 			s_HistSlack.Add (t4 - t3);
-			if (bChange)
+			if (s_bLateChange)
 			{
-				s_HistLag.Add (t4 - nChangeTicks);
+				// pad report -> start of scan-out of the frame whose vblank sample used it
+				s_HistLag.Add (t4 - s_nLateChangeTicks);
+				s_bLateChange = FALSE;
 			}
 			if (t3 - t0 > 16000) s_nOverBudget++;
 			if (nPeriod > 25000) s_nMissedVSync++;
@@ -2081,11 +2093,9 @@ void CKernel::RunGame (void)
 				Log ("firmware vsync does not block: switching to timer pacing", COLOR_ERR);
 			}
 
-			if (nFPS100 >= 5995)
-				snprintf (StFps, sizeof StFps, "%u FPS", (nFPS100 + 50) / 100);
-			else
-				snprintf (StFps, sizeof StFps, "%u.%u FPS", nFPS100 / 100, (nFPS100 % 100) / 10);
-			nFpsColor = nFPS100 < 5990 ? UI_WARN : UI_WHITE;
+			// the board's 59.64 fps (or 60.0 with a standard HDMI mode)
+			snprintf (StFps, sizeof StFps, "%u.%u FPS", nFPS100 / 100, (nFPS100 % 100) / 10);
+			nFpsColor = (nFPS100 + 10 >= CPS1_FPS100 && nFPS100 <= 6010) ? UI_WHITE : UI_WARN;
 			unsigned nLoad = nWorkMax * 100 / FRAME_US;
 			snprintf (StLoad, sizeof StLoad, "%u%%", nLoad);
 			nLoadColor = nLoad > 95 ? UI_ERR : (nLoad >= 75 ? UI_WARN : UI_OK);

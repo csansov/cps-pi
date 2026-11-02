@@ -24,6 +24,8 @@ void lr_audio_reset(void);
 void lr_options(void);
 /* cps-pi: called by the core at the emulated vblank, before the interrupt */
 void lr_vblank_input(void);
+/* cps-pi: 68000 clock of the loaded game in Hz (10 or 12 MHz), see patches/njemu-cps1-timing.py */
+double lr_m68k_clock(void);
 extern unsigned lr_width, lr_height;
 extern uint64_t lr_frame_number;
 extern unsigned lr_audio_rate;

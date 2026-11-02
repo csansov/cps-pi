@@ -54,6 +54,13 @@ build directory and drops in cps-pi's own `libretro/platform.h`.
   "sharp", and the hardware scaler doubles the result), or with square
   pixels (integer scale, hardware scaler); vsync paced at 60 Hz; scanline
   filters in three strengths (medium by default), fine on a Pi 3.
+- The timing of the board: the frame is 262 lines of 512 pixel clocks at
+  8 MHz, 59.637 Hz, and `config.txt` sets an HDMI mode at exactly that rate,
+  so one emulated frame goes out per refresh with nothing sped up, slowed
+  down, dropped or repeated (NJEMU used a round 60 Hz). The 68000 runs at
+  12 MHz on the sets MAME lists with that clock (the CPS-Dash family:
+  Street Fighter II' and later, the QSound games, Pang! 3 ...), 10 MHz on
+  the rest.
 - Low input lag: the pads are sampled at the emulated vblank, the moment the
   game's interrupt handler reads the input ports (a frame fresher than the
   usual latch at the start of the frame), and a frame delay runs the

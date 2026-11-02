@@ -32,6 +32,8 @@ for P in $TARGETS; do
 	cp "$ROOT/src/libretro/platform.h" "$B/njemu/libretro/platform.h"
 	# controls sampled at the emulated vblank, when the game reads them
 	python "$ROOT/patches/njemu-vblank-input.py" "$B/njemu/cps1/driver.c"
+	# the real frame period (59.637 Hz) and the 68000 at 12 MHz where the board had it
+	python "$ROOT/patches/njemu-cps1-timing.py" "$B/njemu"
 	CIRCLE="$ROOTW/circle"
 	[ "$P" = "4" ] && CIRCLE="$ROOTW/circle-rpi4"
 	sed "s|@CIRCLEHOME@|$CIRCLE|; s|@SRC@|$ROOTW/src|; s|@MINIZ@|$ROOTW/third_party/miniz|" \

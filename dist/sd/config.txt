@@ -9,10 +9,21 @@ disable_overscan=1
 hdmi_drive=2
 framebuffer_ignore_alpha=1
 
-# 1080p 60 Hz. No picture? Put a # in front of both lines.
-# For 720p, change hdmi_mode=16 to hdmi_mode=4.
-hdmi_group=1
-hdmi_mode=16
+# 1080p at the CPS1 board's own refresh, 59.637 Hz (262 lines of 512 pixel
+# clocks at 8 MHz): one emulated frame per refresh, nothing sped up or
+# dropped. Standard 1080p timing with the pixel clock scaled to 147.6 MHz.
+# No picture? Put a # in front of these four lines and remove it from the
+# two standard ones below (the game then runs 0.6% fast, at 60 Hz).
+hdmi_group=2
+hdmi_mode=87
+hdmi_timings=1920 1 88 44 148 1080 1 4 5 36 0 0 0 60 0 147602577 3
+hdmi_force_mode=1
+# 720p at 59.637 Hz instead: use this timings line
+#hdmi_timings=1280 1 110 40 220 720 1 5 5 20 0 0 0 60 0 73801289 3
+
+# Standard 1080p 60 Hz (720p: hdmi_mode=4)
+#hdmi_group=1
+#hdmi_mode=16
 
 # Sharp pixels from the hardware scaler; name in the TV's source list
 scaling_kernel=8

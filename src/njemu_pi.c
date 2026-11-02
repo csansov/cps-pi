@@ -461,6 +461,49 @@ void core_set_input_callback(void (*callback)(void))
 	s_input_callback = callback;
 }
 
+/******************************************************************************
+	68000 clock: 10 MHz on the original CPS1, 12 MHz on the later boards
+	(the sets MAME runs with cps1_12MHz / qsound / pang3: the CPS-Dash
+	family and the QSound games). NJEMU had 10 MHz for every game; the
+	build patch patches/njemu-cps1-timing.py makes timer.c ask here.
+******************************************************************************/
+
+/* parents of the 12 MHz families: a set is 12 MHz when it or its parent is listed */
+static const char *const s_12mhz_families[] = {
+	"sf2ce", "sf2hf", "wof", "dino", "punisher", "slammast", "mbombrd", "pang3",
+	"megaman", "pnickj", "qtono2j", "cworld2j", "varth", "qad", "sfzch", "wofch", "cps1mult",
+	NULL
+};
+/* 12 MHz revisions of games whose parent is a 10 MHz board */
+static const char *const s_12mhz_sets[] = {
+	"daimakair", "striderjr", "dynwarjr", "area88r", "ffightae", "cawingjr", NULL
+};
+/* 10 MHz boards inside the 12 MHz families (bootlegs verified by MAME) */
+static const char *const s_10mhz_sets[] = {
+	"sf2amf3", "sf2ceblp", "sf2cems6a", "sf2cems6b", "sf2cems6c", "sf2ceds6", NULL
+};
+
+static int in_list(const char *const *list, const char *name)
+{
+	for (; *list; list++)
+		if (strcmp(*list, name) == 0) return 1;
+	return 0;
+}
+
+double lr_m68k_clock(void)
+{
+	if (in_list(s_10mhz_sets, game_name)) return 10000000.0;
+	if (in_list(s_12mhz_sets, game_name)) return 12000000.0;
+	if (in_list(s_12mhz_families, game_name)) return 12000000.0;
+	if (parent_name[0] && in_list(s_12mhz_families, parent_name)) return 12000000.0;
+	return 10000000.0;
+}
+
+unsigned core_m68k_mhz(void)
+{
+	return (unsigned)(lr_m68k_clock() / 1000000.0);
+}
+
 uint32_t poll_gamepad(void) { return 0; }
 void pad_init(void) {}
 void pad_exit(void) {}
