@@ -131,7 +131,7 @@ private:
 	// configuration (cpspi.cfg)
 	unsigned		 m_nFilter;	// FILTER_*
 	boolean			 m_bHVS;		// FALSE: scaler=cpu in cpspi.cfg
-	boolean			 m_bAspect43;	// 4:3 picture (else square pixels)
+	unsigned		 m_nAspect;	// ASPECT_* (4:3, 4:3 sharp, square pixels)
 	unsigned		 m_nFrameDelay;	// 0 = off, 1 = auto, else fixed microseconds
 
 	static CKernel		*s_pThis;

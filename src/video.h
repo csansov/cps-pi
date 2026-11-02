@@ -38,6 +38,14 @@
 #define FILTER_SCAN_STRONG 3	// dark rows at 25%
 #define FILTER_COUNT	4
 
+// Picture shape: the arcade monitor's 4:3 (the 384 columns spread over 4/3
+// of the picture height, blended between neighbours like a CRT, or sharp:
+// nearest column) or square pixels (integer scale in both directions)
+#define ASPECT_43	0
+#define ASPECT_43_SHARP	1
+#define ASPECT_PIXEL	2
+#define ASPECT_COUNT	3
+
 // Logical colors (R in the low byte); CVideoOut converts them if the
 // framebuffer stores red in the high byte (Pi 4)
 #define RGB(r, g, b)     (0xFF000000u | ((u32)(b) << 16) | ((u32)(g) << 8) | (u32)(r))
@@ -53,9 +61,9 @@ public:
 
 	boolean Initialize (void);		// console mode
 
-	// Game mode for a filter; bAllowHVS = FALSE forces CPU scaling;
-	// bAspect43 = the picture 4:3 on screen, else square pixels
-	boolean SetGameMode (unsigned nFilter, boolean bAllowHVS, boolean bAspect43);
+	// Game mode for a filter and a picture shape (ASPECT_*); bAllowHVS = FALSE
+	// forces CPU scaling
+	boolean SetGameMode (unsigned nFilter, boolean bAllowHVS, unsigned nAspect);
 	boolean SetConsoleMode (void);
 	boolean IsGameMode (void) const		{ return m_bGameMode; }
 
@@ -66,7 +74,8 @@ public:
 	unsigned GetCPUScaleX (void) const	{ return m_nMX; }	// CPU draw scales
 	unsigned GetCPUScaleY (void) const	{ return m_nM; }
 	unsigned GetFilter (void) const		{ return m_nFilter; }
-	boolean IsAspect43 (void) const		{ return m_bAspect43; }
+	unsigned GetAspect (void) const		{ return m_nAspect; }
+	boolean IsAspect43 (void) const		{ return m_nAspect != ASPECT_PIXEL; }
 	unsigned GetFBWidth (void) const	{ return m_nWidth; }	// framebuffer before the HVS
 	unsigned GetFBHeight (void) const	{ return m_nHeight; }
 	unsigned GetScreenGameW (void) const	{ return m_nScreenW; }	// picture size on screen
@@ -124,8 +133,8 @@ private:
 	unsigned m_nScale;			// S (vertical)
 	unsigned m_nK;				// HVS factor (vertical)
 	unsigned m_nM;				// CPU draw scale, vertical
-	unsigned m_nMX;				// CPU draw scale, horizontal
-	boolean	 m_bAspect43;
+	unsigned m_nMX;				// CPU draw scale, horizontal (0: 4:3 column map)
+	unsigned m_nAspect;			// ASPECT_*
 	unsigned m_nScreenW;			// picture width on screen
 	unsigned m_nFilter;
 	unsigned m_nGameX, m_nGameY;		// game rectangle in the framebuffer
@@ -141,7 +150,8 @@ private:
 	u32	*m_pLine;			// one scaled game line (cached memory)
 	u32	*m_pDark;			// the same line darkened (scanlines)
 	u32	*m_pLUT;			// BGR555 -> framebuffer pixel (32768 entries)
-	u16	*m_pColMap;			// 4:3: source column of each picture column on screen
+	u16	*m_pColMap;			// 4:3: source column of each framebuffer picture column
+	u8	*m_pColWeight;			// 4:3: weight (0-255) of the next source column (blend)
 	unsigned m_nPixelOrder;			// reported by the firmware
 	boolean	 m_bRLow;			// red in the low byte of a pixel
 };

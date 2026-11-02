@@ -27,7 +27,7 @@ CVideoOut::CVideoOut (void)
 	m_nK (1),
 	m_nM (1),
 	m_nMX (1),
-	m_bAspect43 (TRUE),
+	m_nAspect (ASPECT_43),
 	m_nScreenW (GAME_W),
 	m_nFilter (FILTER_NONE),
 	m_nGameX (0),
@@ -39,6 +39,7 @@ CVideoOut::CVideoOut (void)
 	m_pDark (0),
 	m_pLUT (0),
 	m_pColMap (0),
+	m_pColWeight (0),
 	m_nPixelOrder (1),
 	m_bRLow (TRUE)
 {
@@ -51,6 +52,7 @@ CVideoOut::~CVideoOut (void)
 	delete [] m_pDark;
 	delete [] m_pLUT;
 	delete [] m_pColMap;
+	delete [] m_pColWeight;
 }
 
 // BGR555 (R in bits 0-4, G 5-9, B 10-14) -> framebuffer pixel
@@ -134,7 +136,8 @@ boolean CVideoOut::Initialize (void)
 	m_pDark = new u32[MAX_LINE];
 	m_pLUT = new u32[32768];
 	m_pColMap = new u16[MAX_LINE];
-	if (m_pLine == 0 || m_pDark == 0 || m_pLUT == 0 || m_pColMap == 0)
+	m_pColWeight = new u8[MAX_LINE];
+	if (m_pLine == 0 || m_pDark == 0 || m_pLUT == 0 || m_pColMap == 0 || m_pColWeight == 0)
 	{
 		return FALSE;
 	}
@@ -149,10 +152,11 @@ boolean CVideoOut::SetConsoleMode (void)
 	return Allocate (m_nDispW, m_nDispH);
 }
 
-boolean CVideoOut::SetGameMode (unsigned nFilter, boolean bAllowHVS, boolean bAspect43)
+boolean CVideoOut::SetGameMode (unsigned nFilter, boolean bAllowHVS, unsigned nAspect)
 {
 	m_nFilter = nFilter < FILTER_COUNT ? nFilter : FILTER_NONE;
-	m_bAspect43 = bAspect43;
+	m_nAspect = nAspect < ASPECT_COUNT ? nAspect : ASPECT_43;
+	const boolean bAspect43 = m_nAspect != ASPECT_PIXEL;
 
 	// vertical integer scale S, and the picture's width on screen: 4/3 of
 	// its height (the arcade monitor) or square pixels
@@ -166,20 +170,21 @@ boolean CVideoOut::SetGameMode (unsigned nFilter, boolean bAllowHVS, boolean bAs
 		nScreenW = bAspect43 ? (GAME_H * S * 4 + 1) / 3 : GAME_W * S;
 	}
 	m_nScale = S;
-	m_nScreenW = nScreenW;
 
-	// HVS factor k: largest divisor of S that divides the display exactly;
-	// with a filter the CPU must draw at least 2x (m >= 2). 4:3 is drawn by
-	// the CPU at the full resolution (k = 1): the firmware keeps the
-	// framebuffer's proportions when it scales, so it cannot stretch for us,
-	// and a fractional horizontal scale is only even enough at 1:1.
+	// HVS factor k: largest divisor of S that divides the display exactly
+	// (the firmware keeps the framebuffer's proportions, so it must have the
+	// display's); with a filter the CPU must draw at least 2x (m >= 2); for
+	// 4:3 the picture in the framebuffer must keep its 384 columns, so that
+	// the CPU spreads them over nScreenW / k columns (597 at 1080p, k = 2)
+	// instead of writing the whole 1195 x 896 picture (10 ms on a Pi 3)
 	m_nK = 1;
-	if (bAllowHVS && !bAspect43)
+	if (bAllowHVS)
 	{
 		for (unsigned k = S; k >= 2; k--)
 		{
 			if (   S % k == 0 && m_nDispH % k == 0 && m_nDispW % k == 0
-			    && (m_nFilter == FILTER_NONE || S / k >= 2))
+			    && (m_nFilter == FILTER_NONE || S / k >= 2)
+			    && (!bAspect43 || nScreenW / k >= GAME_W))
 			{
 				m_nK = k;
 				break;
@@ -202,18 +207,41 @@ boolean CVideoOut::SetGameMode (unsigned nFilter, boolean bAllowHVS, boolean bAs
 		}
 	}
 
-	// 4:3: source column of each of the nScreenW picture columns (sampled at
-	// the column centre); 384 columns over 1195 at 1080p = 3 or 4 pixels each
+	// 4:3: the picture is nFbGameW framebuffer columns wide; each takes the
+	// source column under its centre (sharp) or a blend of the two nearest
+	// (8 bit weights), like the beam of a CRT crossing the pixel clock
+	unsigned nFbGameW = bAspect43 ? nScreenW / m_nK : GAME_W * m_nMX;
 	if (bAspect43)
 	{
-		for (unsigned x = 0; x < nScreenW && x < MAX_LINE; x++)
+		if (nFbGameW > MAX_LINE) nFbGameW = MAX_LINE;
+		for (unsigned x = 0; x < nFbGameW; x++)
 		{
-			unsigned nSrc = ((2 * x + 1) * GAME_W) / (2 * nScreenW);
-			m_pColMap[x] = (u16) (nSrc < GAME_W ? nSrc : GAME_W - 1);
+			if (m_nAspect == ASPECT_43_SHARP)
+			{
+				unsigned nSrc = ((2 * x + 1) * GAME_W) / (2 * nFbGameW);
+				m_pColMap[x] = (u16) (nSrc < GAME_W ? nSrc : GAME_W - 1);
+				m_pColWeight[x] = 0;
+			}
+			else
+			{
+				// source position of the column centre, in 1/256 columns
+				int nPos = (int) (((2 * x + 1) * GAME_W * 256) / (2 * nFbGameW)) - 128;
+				if (nPos < 0) nPos = 0;
+				unsigned nSrc = (unsigned) nPos >> 8, nW = (unsigned) nPos & 255;
+				if (nSrc >= GAME_W - 1)
+				{
+					nSrc = GAME_W - 1;
+					nW = 0;
+				}
+				m_pColMap[x] = (u16) nSrc;
+				m_pColWeight[x] = (u8) nW;
+			}
 		}
+		nScreenW = nFbGameW * m_nK;
 	}
+	m_nScreenW = nScreenW;
 
-	unsigned nGameW = bAspect43 ? nScreenW : GAME_W * m_nMX, nGameH = GAME_H * m_nM;
+	unsigned nGameW = nFbGameW, nGameH = GAME_H * m_nM;
 	m_nGameX = (m_nWidth - nGameW) / 2;
 	m_nGameY = (m_nHeight - nGameH) / 2;
 
@@ -325,7 +353,7 @@ void CVideoOut::DrawGame (const u16 *pSource, boolean bFlip)
 void CVideoOut::DrawGameLine (const u16 *pSource, unsigned y, u32 *pLine, u32 *pDark, boolean bFlip)
 {
 	const unsigned M = m_nM, MX = m_nMX;
-	const unsigned nGameW = MX ? GAME_W * MX : m_nScreenW;
+	const unsigned nGameW = MX ? GAME_W * MX : m_nScreenW / m_nK;
 
 	// scanlines: bottom rows of each group darker (2 of 4 at 4x, 1 of 2 or 3)
 	const unsigned nDarkRows = m_nFilter != FILTER_NONE ? (M >= 4 ? M / 2 : (M >= 2 ? 1 : 0)) : 0;
@@ -338,21 +366,25 @@ void CVideoOut::DrawGameLine (const u16 *pSource, unsigned y, u32 *pLine, u32 *p
 	u32 *pDst = pLine;
 	if (MX == 0)
 	{
-		// 4:3: the column map (nearest source column of each screen column)
+		// 4:3: the column map, each column a blend of source column i and
+		// i + 1 with weight w / 256 (w = 0: sharp); the two 16 bit lanes
+		// trick blends the four bytes of a pixel with two multiplies
 		const u16 *pMap = m_pColMap;
-		if (bFlip)
+		const u8 *pW = m_pColWeight;
+		for (unsigned x = 0; x < nGameW; x++)
 		{
-			for (unsigned x = 0; x < nGameW; x++)
+			unsigned i = pMap[x], w = pW[x];
+			u32 a = pLUT[pSrc[bFlip ? GAME_W - 1 - i : i] & 0x7FFF];
+			if (w == 0)
 			{
-				*pDst++ = pLUT[pSrc[GAME_W - 1 - pMap[x]] & 0x7FFF];
+				*pDst++ = a;
+				continue;
 			}
-		}
-		else
-		{
-			for (unsigned x = 0; x < nGameW; x++)
-			{
-				*pDst++ = pLUT[pSrc[pMap[x]] & 0x7FFF];
-			}
+			u32 b = pLUT[pSrc[bFlip ? GAME_W - 2 - i : i + 1] & 0x7FFF];
+			unsigned iw = 256 - w;
+			u32 rb = ((a & 0x00FF00FFu) * iw + (b & 0x00FF00FFu) * w) >> 8;
+			u32 ga = (((a >> 8) & 0x00FF00FFu) * iw + ((b >> 8) & 0x00FF00FFu) * w) >> 8;
+			*pDst++ = (rb & 0x00FF00FFu) | ((ga & 0x00FF00FFu) << 8);
 		}
 	}
 	else if (bFlip)

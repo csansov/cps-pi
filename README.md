@@ -48,11 +48,12 @@ build directory and drops in cps-pi's own `libretro/platform.h`.
 
 - Game list from `cpspi/roms/*.zip`, titles from NJEMU's database, last game
   remembered, clones shown only when their parent is present.
-- The 384x224 picture shown as on the arcade monitor, 4:3 (1195x896 at
-  1080p: integer 4x vertically, the 384 columns mapped onto 1195 by the CPU
-  at the full resolution), or with square pixels (integer scale, hardware
-  scaler); vsync paced at 60 Hz; scanline filters in three strengths
-  (medium by default), fine on a Pi 3.
+- The 384x224 picture shown as on the arcade monitor, 4:3 (1194x896 at
+  1080p: integer 4x vertically; the 384 columns are spread over 597
+  framebuffer columns by the CPU, blended between neighbours like a CRT or
+  "sharp", and the hardware scaler doubles the result), or with square
+  pixels (integer scale, hardware scaler); vsync paced at 60 Hz; scanline
+  filters in three strengths (medium by default), fine on a Pi 3.
 - Low input lag: the pads are sampled at the emulated vblank, the moment the
   game's interrupt handler reads the input ports (a frame fresher than the
   usual latch at the start of the frame), and a frame delay runs the

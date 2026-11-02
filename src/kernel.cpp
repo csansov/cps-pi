@@ -152,6 +152,8 @@ static void LateInputs (void)
 
 // ---- helpers --------------------------------------------------------------
 
+static const char *AspectName (unsigned nAspect);
+
 static void FormatMs (char *pOut, size_t nSize, unsigned nMicros)
 {
 	snprintf (pOut, nSize, "%u.%02u", nMicros / 1000, (nMicros % 1000) / 10);
@@ -301,7 +303,7 @@ CKernel::CKernel (void)
 	m_nShots (0),
 	m_nFilter (FILTER_SCAN_MEDIUM),
 	m_bHVS (TRUE),
-	m_bAspect43 (TRUE),
+	m_nAspect (ASPECT_43),
 	m_nFrameDelay (1)
 {
 	s_pThis = this;
@@ -1128,7 +1130,7 @@ void CKernel::VideoModeTag (char *pOut, size_t nSize)
 
 void CKernel::ApplyVideoMode (void)
 {
-	if (!m_Video.SetGameMode (m_nFilter, m_bHVS, m_bAspect43))
+	if (!m_Video.SetGameMode (m_nFilter, m_bHVS, m_nAspect))
 	{
 		Fatal (CPSPI_ERR_FB, "cannot set up the game framebuffer");
 	}
@@ -1138,8 +1140,7 @@ void CKernel::ApplyVideoMode (void)
 	snprintf (Line, sizeof Line, "Video: mode %s, HDMI %ux%u, framebuffer %ux%u, picture %ux%u (%s), vertical %ux (HVS %ux, CPU %ux), filter %s%s",
 		  Tag, m_Video.GetWidth (), m_Video.GetHeight (),
 		  m_Video.GetFBWidth (), m_Video.GetFBHeight (),
-		  m_Video.GetScreenGameW (), m_Video.GetScreenGameH (),
-		  m_Video.IsAspect43 () ? "4:3, columns mapped by the CPU" : "square pixels",
+		  m_Video.GetScreenGameW (), m_Video.GetScreenGameH (), AspectName (m_Video.GetAspect ()),
 		  m_Video.GetScale (), m_Video.GetHVSFactor (), m_Video.GetCPUScaleY (),
 		  FilterName (m_Video.GetFilter ()), m_bHVS ? "" : " (scaler=cpu)");
 	Log (Line, COLOR_TEXT);
@@ -1147,6 +1148,17 @@ void CKernel::ApplyVideoMode (void)
 		  m_Video.GetPixelOrder () ? "RGB" : "BGR", m_Video.GetPixelOrder (),
 		  m_Video.IsRedLow () ? "low" : "high");
 	Log (Line, COLOR_TEXT);
+}
+
+// cpspi.cfg value and menu label of a picture shape
+static const char *AspectName (unsigned nAspect)
+{
+	switch (nAspect)
+	{
+	case ASPECT_43_SHARP:	return "4:3sharp";
+	case ASPECT_PIXEL:	return "square";
+	default:		return "4:3";
+	}
 }
 
 void CKernel::LoadConfig (void)
@@ -1167,8 +1179,11 @@ void CKernel::LoadConfig (void)
 	else if (strstr (Text, "filter=SCANLINES_STRONG"))	m_nFilter = FILTER_SCAN_STRONG;
 	else if (strstr (Text, "filter=SCANLINES"))		m_nFilter = FILTER_SCAN_MEDIUM;
 	if (strstr (Text, "scaler=cpu"))	m_bHVS = FALSE;
-	// aspect=square: integer scale in both directions; default 4:3 (the arcade monitor)
-	if (strstr (Text, "aspect=square"))	m_bAspect43 = FALSE;
+	// aspect=4:3 (default, the arcade monitor, columns blended), 4:3sharp
+	// (nearest column) or square (integer scale in both directions)
+	if (strstr (Text, "aspect=square"))		m_nAspect = ASPECT_PIXEL;
+	else if (strstr (Text, "aspect=4:3sharp"))	m_nAspect = ASPECT_43_SHARP;
+	else if (strstr (Text, "aspect=4:3"))		m_nAspect = ASPECT_43;
 	// framedelay=off / auto / N (milliseconds): how long after vsync the
 	// inputs are read and the frame emulated (later = less lag)
 	const char *pFD = strstr (Text, "framedelay=");
@@ -1189,7 +1204,7 @@ void CKernel::LoadConfig (void)
 
 	char Line[140];
 	snprintf (Line, sizeof Line, "Settings: aspect %s, filter %s, frame delay %s, USB polling %s",
-		  m_bAspect43 ? "4:3" : "square", FilterName (m_nFilter),
+		  AspectName (m_nAspect), FilterName (m_nFilter),
 		  m_nFrameDelay == 0 ? "off" : (m_nFrameDelay == 1 ? "auto" : "fixed"),
 		  g_nUSBInterruptPollMs ? "1 ms" : "native");
 	Log (Line, COLOR_TEXT);
@@ -1198,7 +1213,7 @@ void CKernel::LoadConfig (void)
 void CKernel::SaveConfig (void)
 {
 	char Text[240];
-	snprintf (Text, sizeof Text, "aspect=%s\r\nfilter=%s\r\n%s", m_bAspect43 ? "4:3" : "square",
+	snprintf (Text, sizeof Text, "aspect=%s\r\nfilter=%s\r\n%s", AspectName (m_nAspect),
 		  FilterName (m_nFilter), m_bHVS ? "" : "scaler=cpu\r\n");
 	if (m_nFrameDelay == 0)
 	{
@@ -1223,8 +1238,7 @@ void CKernel::RunSystemMenu (void)
 
 	unsigned nSel = 0;
 	u32 nPrev = ~0u;
-	unsigned nOldFilter = m_nFilter, nOldDelay = m_nFrameDelay;
-	boolean bOldAspect = m_bAspect43;
+	unsigned nOldFilter = m_nFilter, nOldDelay = m_nFrameDelay, nOldAspect = m_nAspect;
 	const char *pMsg = "";
 	unsigned nFrame = 0;
 
@@ -1258,7 +1272,7 @@ void CKernel::RunSystemMenu (void)
 			switch (nSel)
 			{
 			case SmAspect:
-				m_bAspect43 = !m_bAspect43;
+				m_nAspect = (m_nAspect + ASPECT_COUNT + (unsigned) nDir) % ASPECT_COUNT;
 				ApplyVideoMode ();
 				break;
 
@@ -1315,7 +1329,8 @@ void CKernel::RunSystemMenu (void)
 			Items[i].bDisabled = FALSE;
 		}
 		static const char *FilterLabels[FILTER_COUNT] = {"OFF", "LIGHT", "MEDIUM", "STRONG"};
-		Items[SmAspect].pValue = m_bAspect43 ? "4:3" : "PIXEL";
+		static const char *AspectLabels[ASPECT_COUNT] = {"4:3", "4:3 SHARP", "PIXEL"};
+		Items[SmAspect].pValue = AspectLabels[m_nAspect < ASPECT_COUNT ? m_nAspect : 0];
 		Items[SmFilter].pValue = FilterLabels[m_nFilter];
 		char Delay[12];
 		if (m_nFrameDelay == 0)		strcpy (Delay, "OFF");
@@ -1329,12 +1344,12 @@ void CKernel::RunSystemMenu (void)
 		ShowUIFrame ();
 	}
 
-	if (m_nFilter != nOldFilter || m_bAspect43 != bOldAspect || m_nFrameDelay != nOldDelay)
+	if (m_nFilter != nOldFilter || m_nAspect != nOldAspect || m_nFrameDelay != nOldDelay)
 	{
 		SaveConfig ();
 		char Line[120];
 		snprintf (Line, sizeof Line, "New settings: aspect %s, filter %s, frame delay %u",
-			  m_bAspect43 ? "4:3" : "square", FilterName (m_nFilter), m_nFrameDelay);
+			  AspectName (m_nAspect), FilterName (m_nFilter), m_nFrameDelay);
 		Log (Line, COLOR_TEXT);
 	}
 }
