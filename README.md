@@ -80,7 +80,11 @@ after building) to its root: the Raspberry Pi firmware, `config.txt`,
 NJEMU identifies every ROM by CRC, in the sets listed in `cpspi/rominfo.cps1`
 (MAME 0.152 era). A clone needs its parent zip in the same folder. Only the
 CRCs matter, so a newer set whose ROM contents are the same loads too,
-whatever the file names. No games are included.
+whatever the file names. Current MAME and FBNeo sets differ from the
+database for some games (re-dumped or re-arranged ROMs): run
+`python tools/check_roms.py <folder with the zips>` on the PC before copying
+them, it names every missing ROM and the set a zip's contents do match.
+No games are included.
 
 ## Controls
 
