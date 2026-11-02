@@ -13,8 +13,9 @@ maintained by fjtrujy and HonkeyKong). The frontend, the boot sequence, the
 menus, the pad handling and the video and audio paths are neo-pi's, adapted to
 the CPS1 picture and controls.
 
-Status: **0.1.0, first iteration**. It builds and links; it has not yet been
-run on real hardware. Expect rough edges.
+Status: **0.2.0**. Runs on a Raspberry Pi 3 Model B at a steady 60 fps with
+the CPU less than half busy (Street Fighter II': emulation 2.4 ms per frame,
+worst 4.8 ms). Expect rough edges.
 
 ## Why
 
@@ -47,8 +48,13 @@ build directory and drops in cps-pi's own `libretro/platform.h`.
 
 - Game list from `cpspi/roms/*.zip`, titles from NJEMU's database, last game
   remembered, clones shown only when their parent is present.
-- 384x224 picture at an integer scale (4x at 1080p, done by the hardware
-  scaler), vsync paced at 60 Hz, scanline filters in three strengths.
+- The 384x224 picture shown as on the arcade monitor, 4:3 (1195x896 at
+  1080p: integer 4x vertically, the horizontal stretch done by the hardware
+  scaler, so it costs nothing), or with square pixels; vsync paced at 60 Hz;
+  scanline filters in three strengths (medium by default), fine on a Pi 3.
+- Frame delay: the inputs are read and the frame emulated as late as
+  possible after vsync (automatic, from the measured frame times), which
+  takes about 10 ms off the input lag.
 - HDMI audio at 48 kHz; the chips run at their native 44.1 kHz (YM2151 + OKI)
   or 24 kHz (QSound) and are resampled.
 - USB gamepads (six buttons, Start, Select) and keyboard, USB polled every
@@ -57,8 +63,13 @@ build directory and drops in cps-pi's own `libretro/platform.h`.
   TEST switch: DIP switches and board tests), game list, power off. Select+1
   takes a screenshot, Select+2 shows the status line (FPS, load, temperature),
   Select+3 the credits. A short Select press inserts a coin.
-- EEPROM contents saved in `cpspi/nvram`, diagnostics in `cpspi/LOG.TXT`,
-  benchmark and sampling profiler with an empty `cpspi/BENCH` file.
+- OPTIONS from the game list (button 4): picture 4:3 or pixel, scanlines,
+  frame delay (auto / off / 4 / 8 ms), controls, power off; saved in
+  `cpspi/cpspi.cfg` (`aspect=`, `filter=`, `framedelay=`, `scaler=cpu`,
+  `usbpoll=native`).
+- EEPROM contents saved in `cpspi/nvram`, diagnostics in `cpspi/LOG.TXT`
+  (frame times, audio queue, input lag per minute), benchmark and sampling
+  profiler with an empty `cpspi/BENCH` file.
 
 Not yet: save states, DIP switch editor, vertical games drawn upright (they
 run, but sideways), the multicore and beam-racing refinements of neo-pi,

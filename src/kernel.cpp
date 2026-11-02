@@ -175,6 +175,7 @@ static THisto s_HistLag;		// pad report -> start of scan-out of the frame that u
 static THisto s_HistSlack;		// frame ready (flip) -> vsync
 static unsigned s_nOverBudget, s_nMissedVSync, s_nWindowFrames;
 static unsigned s_nWindowStart;
+static unsigned s_nFrameDelayNow;	// microseconds after vsync before emulating (RunGame)
 
 static boolean HasZipExtension (const char *pName)
 {
@@ -248,10 +249,10 @@ CKernel::CKernel (void)
 	m_bStatusOn (FALSE),
 	m_nClearStatus (0),
 	m_nShots (0),
-	m_nFilter (0),
+	m_nFilter (FILTER_SCAN_MEDIUM),
 	m_bHVS (TRUE),
-	m_bFilterAllowed (TRUE),
-	m_bForceFilters (FALSE)
+	m_bAspect43 (TRUE),
+	m_nFrameDelay (1)
 {
 	s_pThis = this;
 	m_LastRaw[0] = '\0';
@@ -451,7 +452,7 @@ char *CKernel::LoadText (const char *pPath, size_t *pSize)
 // "name,Title" lines of zipname.cps1
 const char *CKernel::TitleOf (const char *pName) const
 {
-	static char Title[48];
+	static char Title[64];
 	if (m_pTitles == 0)
 	{
 		return 0;
@@ -1006,8 +1007,9 @@ void CKernel::ReportWindow (boolean bFinal)
 		  ea, ep, em, wa, wp, s_nOverBudget);
 	Log (Line, COLOR_TEXT);
 	snprintf (Line, sizeof Line,
-		  "   video %s x%u %s | max period %s ms, missed vsyncs %u | audio %u-%u, underruns %u, adj %d | %u MHz %u C",
-		  Tag, m_Video.GetScale (), FilterShort (m_Video.GetFilter ()),
+		  "   video %s x%u %s %s | frame delay %u.%u ms | max period %s ms, missed vsyncs %u | audio %u-%u, underruns %u, adj %d | %u MHz %u C",
+		  Tag, m_Video.GetScale (), m_Video.IsAspect43 () ? "4:3" : "SQ", FilterShort (m_Video.GetFilter ()),
+		  s_nFrameDelayNow / 1000, (s_nFrameDelayNow % 1000) / 100,
 		  pm, s_nMissedVSync, qmin, qmax, und, adj,
 		  m_CPUThrottle.GetClockRate () / 1000000, m_CPUThrottle.GetTemperature ());
 	Log (Line, COLOR_TEXT);
@@ -1075,17 +1077,18 @@ void CKernel::VideoModeTag (char *pOut, size_t nSize)
 
 void CKernel::ApplyVideoMode (void)
 {
-	if (!m_Video.SetGameMode (m_nFilter, m_bHVS))
+	if (!m_Video.SetGameMode (m_nFilter, m_bHVS, m_bAspect43))
 	{
 		Fatal (CPSPI_ERR_FB, "cannot set up the game framebuffer");
 	}
 	char Tag[8];
 	VideoModeTag (Tag, sizeof Tag);
 	char Line[MaxLineLen];
-	snprintf (Line, sizeof Line, "Video: mode %s, HDMI %ux%u, framebuffer %ux%u, scale %ux (HVS %ux, CPU %ux), filter %s%s",
+	snprintf (Line, sizeof Line, "Video: mode %s, HDMI %ux%u, framebuffer %ux%u, picture %ux%u (%s), vertical %ux (HVS %ux, CPU %ux), CPU x%u, filter %s%s",
 		  Tag, m_Video.GetWidth (), m_Video.GetHeight (),
-		  m_Video.GetFBWidth (), m_Video.GetFBHeight (), m_Video.GetScale (),
-		  m_Video.GetHVSFactor (), m_Video.GetScale () / m_Video.GetHVSFactor (),
+		  m_Video.GetFBWidth (), m_Video.GetFBHeight (),
+		  m_Video.GetScreenGameW (), m_Video.GetScreenGameH (), m_Video.IsAspect43 () ? "4:3" : "square pixels",
+		  m_Video.GetScale (), m_Video.GetHVSFactor (), m_Video.GetCPUScaleY (), m_Video.GetCPUScaleX (),
 		  FilterName (m_Video.GetFilter ()), m_bHVS ? "" : " (scaler=cpu)");
 	Log (Line, COLOR_TEXT);
 	snprintf (Line, sizeof Line, "Video: pixel order %s (%u), red in the %s byte",
@@ -1107,29 +1110,53 @@ void CKernel::LoadConfig (void)
 	f_close (&File);
 	Text[nRead] = '\0';
 
-	if (strstr (Text, "filter=SCANLINES_LIGHT"))		m_nFilter = FILTER_SCAN_LIGHT;
+	if (strstr (Text, "filter=NONE"))			m_nFilter = FILTER_NONE;
+	else if (strstr (Text, "filter=SCANLINES_LIGHT"))	m_nFilter = FILTER_SCAN_LIGHT;
 	else if (strstr (Text, "filter=SCANLINES_STRONG"))	m_nFilter = FILTER_SCAN_STRONG;
 	else if (strstr (Text, "filter=SCANLINES"))		m_nFilter = FILTER_SCAN_MEDIUM;
 	if (strstr (Text, "scaler=cpu"))	m_bHVS = FALSE;
-	if (strstr (Text, "filters=on"))	m_bFilterAllowed = m_bForceFilters = TRUE;	// e.g. to try them on a Pi 3
-	if (!m_bFilterAllowed)			m_nFilter = FILTER_NONE;
+	// aspect=square: integer scale in both directions; default 4:3 (the arcade monitor)
+	if (strstr (Text, "aspect=square"))	m_bAspect43 = FALSE;
+	// framedelay=off / auto / N (milliseconds): how long after vsync the
+	// inputs are read and the frame emulated (later = less lag)
+	const char *pFD = strstr (Text, "framedelay=");
+	if (pFD)
+	{
+		pFD += 11;
+		if (strncmp (pFD, "off", 3) == 0)	m_nFrameDelay = 0;
+		else if (strncmp (pFD, "auto", 4) == 0)	m_nFrameDelay = 1;
+		else
+		{
+			unsigned nMs = (unsigned) atoi (pFD);
+			m_nFrameDelay = nMs >= 1 && nMs <= 13 ? nMs * 1000 : 1;
+		}
+	}
 	// USB pads are polled every 1 ms (like usbhid.jspoll=1 on Linux);
 	// usbpoll=native keeps the interval requested by the device
 	if (strstr (Text, "usbpoll=native"))	g_nUSBInterruptPollMs = 0;
 
 	char Line[140];
-	snprintf (Line, sizeof Line, "Settings: filter %s, USB polling %s",
-		  FilterName (m_nFilter), g_nUSBInterruptPollMs ? "1 ms" : "native");
+	snprintf (Line, sizeof Line, "Settings: aspect %s, filter %s, frame delay %s, USB polling %s",
+		  m_bAspect43 ? "4:3" : "square", FilterName (m_nFilter),
+		  m_nFrameDelay == 0 ? "off" : (m_nFrameDelay == 1 ? "auto" : "fixed"),
+		  g_nUSBInterruptPollMs ? "1 ms" : "native");
 	Log (Line, COLOR_TEXT);
 }
 
 void CKernel::SaveConfig (void)
 {
-	char Text[200];
-	snprintf (Text, sizeof Text, "filter=%s\r\n%s", FilterName (m_nFilter), m_bHVS ? "" : "scaler=cpu\r\n");
-	if (m_bForceFilters)
+	char Text[240];
+	snprintf (Text, sizeof Text, "aspect=%s\r\nfilter=%s\r\n%s", m_bAspect43 ? "4:3" : "square",
+		  FilterName (m_nFilter), m_bHVS ? "" : "scaler=cpu\r\n");
+	if (m_nFrameDelay == 0)
 	{
-		strcat (Text, "filters=on\r\n");
+		strcat (Text, "framedelay=off\r\n");
+	}
+	else if (m_nFrameDelay > 1)
+	{
+		char FD[24];
+		snprintf (FD, sizeof FD, "framedelay=%u\r\n", m_nFrameDelay / 1000);
+		strcat (Text, FD);
 	}
 	if (g_nUSBInterruptPollMs == 0)
 	{
@@ -1140,11 +1167,12 @@ void CKernel::SaveConfig (void)
 
 void CKernel::RunSystemMenu (void)
 {
-	enum { SmFilter, SmControls, SmPower, SmCount };
+	enum { SmAspect, SmFilter, SmDelay, SmControls, SmPower, SmCount };
 
 	unsigned nSel = 0;
 	u32 nPrev = ~0u;
-	unsigned nOldFilter = m_nFilter;
+	unsigned nOldFilter = m_nFilter, nOldDelay = m_nFrameDelay;
+	boolean bOldAspect = m_bAspect43;
 	const char *pMsg = "";
 	unsigned nFrame = 0;
 
@@ -1177,16 +1205,22 @@ void CKernel::RunSystemMenu (void)
 		{
 			switch (nSel)
 			{
+			case SmAspect:
+				m_bAspect43 = !m_bAspect43;
+				ApplyVideoMode ();
+				break;
+
 			case SmFilter:
-				if (m_bFilterAllowed)
-				{
-					m_nFilter = (m_nFilter + FILTER_COUNT + (unsigned) nDir) % FILTER_COUNT;
-					ApplyVideoMode ();
-				}
-				else if (nNew & BTN_1)
-				{
-					pMsg = "SCANLINES NEED A PI 4";
-				}
+				m_nFilter = (m_nFilter + FILTER_COUNT + (unsigned) nDir) % FILTER_COUNT;
+				ApplyVideoMode ();
+				break;
+
+			case SmDelay:
+				// off -> auto -> 4 ms -> 8 ms -> off
+				if (m_nFrameDelay == 0)		m_nFrameDelay = nDir > 0 ? 1 : 8000;
+				else if (m_nFrameDelay == 1)	m_nFrameDelay = nDir > 0 ? 4000 : 0;
+				else if (m_nFrameDelay <= 4000)	m_nFrameDelay = nDir > 0 ? 8000 : 1;
+				else				m_nFrameDelay = nDir > 0 ? 0 : 4000;
 				break;
 
 			case SmControls:
@@ -1220,7 +1254,7 @@ void CKernel::RunSystemMenu (void)
 			break;
 		}
 
-		static const char *Labels[SmCount] = {"SCANLINES", "CONTROLS", "POWER OFF"};
+		static const char *Labels[SmCount] = {"PICTURE", "SCANLINES", "FRAME DELAY", "CONTROLS", "POWER OFF"};
 		TMenuItem Items[SmCount];
 		for (unsigned i = 0; i < SmCount; i++)
 		{
@@ -1229,8 +1263,13 @@ void CKernel::RunSystemMenu (void)
 			Items[i].bDisabled = FALSE;
 		}
 		static const char *FilterLabels[FILTER_COUNT] = {"OFF", "LIGHT", "MEDIUM", "STRONG"};
-		Items[SmFilter].pValue = m_bFilterAllowed ? FilterLabels[m_nFilter] : "PI 4 ONLY";
-		Items[SmFilter].bDisabled = !m_bFilterAllowed;
+		Items[SmAspect].pValue = m_bAspect43 ? "4:3" : "PIXEL";
+		Items[SmFilter].pValue = FilterLabels[m_nFilter];
+		char Delay[12];
+		if (m_nFrameDelay == 0)		strcpy (Delay, "OFF");
+		else if (m_nFrameDelay == 1)	strcpy (Delay, "AUTO");
+		else				snprintf (Delay, sizeof Delay, "%u MS", m_nFrameDelay / 1000);
+		Items[SmDelay].pValue = Delay;
 
 		static const TButtonHint Hints[2] = {{'1', "CHANGE"}, {'2', "BACK"}};
 		m_pUI->DrawPanelMenu (m_nLoaded >= 0, "OPTIONS", Items, SmCount, nSel, pMsg, UI_VALUE,
@@ -1238,11 +1277,12 @@ void CKernel::RunSystemMenu (void)
 		ShowUIFrame ();
 	}
 
-	if (m_nFilter != nOldFilter)
+	if (m_nFilter != nOldFilter || m_bAspect43 != bOldAspect || m_nFrameDelay != nOldDelay)
 	{
 		SaveConfig ();
 		char Line[120];
-		snprintf (Line, sizeof Line, "New settings: filter %s", FilterName (m_nFilter));
+		snprintf (Line, sizeof Line, "New settings: aspect %s, filter %s, frame delay %u",
+			  m_bAspect43 ? "4:3" : "square", FilterName (m_nFilter), m_nFrameDelay);
 		Log (Line, COLOR_TEXT);
 	}
 }
@@ -1611,6 +1651,13 @@ void CKernel::RunGame (void)
 	unsigned nNextDeadline = nLastVSync + FRAME_US;
 	unsigned nTotalFrames = 0;
 
+	// frame delay: the frame is emulated this long after vsync, so that the
+	// inputs are read as late as possible; auto = from the slowest frame of
+	// the last two seconds, with a margin (nothing during the first second)
+	unsigned nDelayUs = m_nFrameDelay > 1 ? m_nFrameDelay : 0;
+	unsigned nWorkMaxPrev = 0;
+	s_nFrameDelayNow = nDelayUs;
+
 	ResetGameStats ();
 	{
 		unsigned nOld;
@@ -1624,6 +1671,14 @@ void CKernel::RunGame (void)
 
 	while (1)
 	{
+		if (nDelayUs && !bMenu)
+		{
+			// wait after the vsync before reading the controls
+			unsigned nTarget = nLastVSync + nDelayUs;
+			while ((int) (CTimer::GetClockTicks () - nTarget) < 0)
+			{
+			}
+		}
 		unsigned t0 = CTimer::GetClockTicks ();
 		unsigned t1 = t0;
 
@@ -1977,6 +2032,17 @@ void CKernel::RunGame (void)
 				  k == S ? "HVS" : (k == 1 ? "CPU" : "CPU+HVS"));
 			bStatusReady = TRUE;
 
+			if (m_nFrameDelay == 1)
+			{
+				// slowest frame of the last two seconds + 25% + 2.5 ms must still fit
+				unsigned nWorst = nWorkMax > nWorkMaxPrev ? nWorkMax : nWorkMaxPrev;
+				unsigned nBudget = nWorst + nWorst / 4 + 2500;
+				nDelayUs = nBudget + 1000 < FRAME_US ? FRAME_US - nBudget : 0;
+				if (nDelayUs > 12000) nDelayUs = 12000;
+				nWorkMaxPrev = nWorkMax;
+				s_nFrameDelayNow = nDelayUs;
+			}
+
 			m_CPUThrottle.Update ();
 			m_ActLED.On ();
 			nFrames = 0;
@@ -2029,7 +2095,6 @@ TShutdownMode CKernel::Run (void)
 	f_mkdir (ROMS_DIR);
 	f_mkdir (NVRAM_DIR);
 	f_mkdir (SHOT_DIR);
-	m_bFilterAllowed = CMachineInfo::Get ()->GetModelMajor () >= 4;
 	LoadConfig ();
 
 	m_pUI = new CUI;

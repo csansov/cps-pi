@@ -26,6 +26,9 @@ CVideoOut::CVideoOut (void)
 	m_nScale (1),
 	m_nK (1),
 	m_nM (1),
+	m_nMX (1),
+	m_bAspect43 (TRUE),
+	m_nScreenW (GAME_W),
 	m_nFilter (FILTER_NONE),
 	m_nGameX (0),
 	m_nGameY (0),
@@ -143,47 +146,74 @@ boolean CVideoOut::SetConsoleMode (void)
 	return Allocate (m_nDispW, m_nDispH);
 }
 
-boolean CVideoOut::SetGameMode (unsigned nFilter, boolean bAllowHVS)
+boolean CVideoOut::SetGameMode (unsigned nFilter, boolean bAllowHVS, boolean bAspect43)
 {
 	m_nFilter = nFilter < FILTER_COUNT ? nFilter : FILTER_NONE;
+	m_bAspect43 = bAspect43;
 
-	// total integer scale S
-	unsigned sx = m_nDispW / GAME_W, sy = m_nDispH / GAME_H;
-	m_nScale = sx < sy ? sx : sy;
-	if (m_nScale < 1) m_nScale = 1;
-	if (m_nScale > 8) m_nScale = 8;
+	// vertical integer scale S, and the picture's width on screen: 4/3 of
+	// its height (the arcade monitor) or square pixels
+	unsigned S = m_nDispH / GAME_H;
+	if (S < 1) S = 1;
+	if (S > 8) S = 8;
+	unsigned nScreenW = bAspect43 ? (GAME_H * S * 4 + 1) / 3 : GAME_W * S;
+	while (S > 1 && nScreenW > m_nDispW)
+	{
+		S--;
+		nScreenW = bAspect43 ? (GAME_H * S * 4 + 1) / 3 : GAME_W * S;
+	}
+	m_nScale = S;
+	m_nScreenW = nScreenW;
 
-	// HVS factor k: largest divisor of S that divides the display exactly;
-	// with a filter the CPU must draw at least 2x (m >= 2)
+	// HVS factor k (vertical): largest divisor of S that divides the display
+	// exactly; with a filter the CPU must draw at least 2x (m >= 2)
 	m_nK = 1;
 	if (bAllowHVS)
 	{
-		for (unsigned k = m_nScale; k >= 2; k--)
+		for (unsigned k = S; k >= 2; k--)
 		{
-			if (   m_nScale % k == 0
-			    && m_nDispW % k == 0 && m_nDispH % k == 0
-			    && (m_nFilter == FILTER_NONE || m_nScale / k >= 2))
+			if (   S % k == 0 && m_nDispH % k == 0
+			    && (bAspect43 || m_nDispW % k == 0)
+			    && (m_nFilter == FILTER_NONE || S / k >= 2))
 			{
 				m_nK = k;
 				break;
 			}
 		}
 	}
-	m_nM = m_nScale / m_nK;
+	m_nM = S / m_nK;
 
-	unsigned nFbW = m_nDispW / m_nK, nFbH = m_nDispH / m_nK;
+	// horizontal: square pixels = the same factors; 4:3 = the CPU draws the
+	// picture mx times wider (never wider than it will be on screen) and the
+	// framebuffer width makes the HVS stretch it to nScreenW
+	unsigned nFbH = m_nDispH / m_nK, nFbW;
+	if (!bAspect43)
+	{
+		m_nMX = m_nM;
+		nFbW = m_nDispW / m_nK;
+	}
+	else
+	{
+		m_nMX = m_nM;
+		while (m_nMX > 1 && GAME_W * m_nMX > nScreenW) m_nMX--;
+		nFbW = (m_nDispW * GAME_W * m_nMX + nScreenW / 2) / nScreenW;
+		nFbW = (nFbW + 1) & ~1u;
+		if (nFbW > m_nDispW) nFbW = m_nDispW;
+	}
 	if (!Allocate (nFbW, nFbH))
 	{
-		// fall back to CPU scaling at the full resolution
+		// fall back to the full resolution: CPU scaling, square pixels
 		m_nK = 1;
-		m_nM = m_nScale;
+		m_nM = m_nMX = S;
+		m_bAspect43 = FALSE;
+		m_nScreenW = GAME_W * S;
 		if (!Allocate (m_nDispW, m_nDispH))
 		{
 			return FALSE;
 		}
 	}
 
-	unsigned nGameW = GAME_W * m_nM, nGameH = GAME_H * m_nM;
+	unsigned nGameW = GAME_W * m_nMX, nGameH = GAME_H * m_nM;
 	m_nGameX = (m_nWidth - nGameW) / 2;
 	m_nGameY = (m_nHeight - nGameH) / 2;
 
@@ -294,8 +324,8 @@ void CVideoOut::DrawGame (const u16 *pSource, boolean bFlip)
 
 void CVideoOut::DrawGameLine (const u16 *pSource, unsigned y, u32 *pLine, u32 *pDark, boolean bFlip)
 {
-	const unsigned M = m_nM;
-	const unsigned nGameW = GAME_W * M;
+	const unsigned M = m_nM, MX = m_nMX;
+	const unsigned nGameW = GAME_W * MX;
 
 	// scanlines: bottom rows of each group darker (2 of 4 at 4x, 1 of 2 or 3)
 	const unsigned nDarkRows = m_nFilter != FILTER_NONE ? (M >= 4 ? M / 2 : (M >= 2 ? 1 : 0)) : 0;
@@ -311,10 +341,17 @@ void CVideoOut::DrawGameLine (const u16 *pSource, unsigned y, u32 *pLine, u32 *p
 		for (unsigned x = 0; x < GAME_W; x++)
 		{
 			u32 c = pLUT[pSrc[GAME_W - 1 - x] & 0x7FFF];
-			for (unsigned s = 0; s < M; s++)
+			for (unsigned s = 0; s < MX; s++)
 			{
 				*pDst++ = c;
 			}
+		}
+	}
+	else if (MX == 1)
+	{
+		for (unsigned x = 0; x < GAME_W; x++)
+		{
+			*pDst++ = pLUT[pSrc[x] & 0x7FFF];
 		}
 	}
 	else
@@ -322,7 +359,7 @@ void CVideoOut::DrawGameLine (const u16 *pSource, unsigned y, u32 *pLine, u32 *p
 		for (unsigned x = 0; x < GAME_W; x++)
 		{
 			u32 c = pLUT[pSrc[x] & 0x7FFF];
-			for (unsigned s = 0; s < M; s++)
+			for (unsigned s = 0; s < MX; s++)
 			{
 				*pDst++ = c;
 			}

@@ -2,12 +2,15 @@
  * cps-pi - HDMI output
  *
  * Console mode: framebuffer at the HDMI resolution (boot text, errors).
- * Game mode: integer scaling of the 384x224 CPS1 picture, split between
- * the CPU (draw scale m) and the hardware scaler HVS (factor k), S = m * k:
- *   - the framebuffer is (display / k), so the HVS enlarges it exactly k times
- *     with the same factor in both directions (square pixels, no stretching);
- *   - black borders are drawn by us inside the framebuffer;
- *   - if the display is not divisible by any useful k, k = 1 (CPU only).
+ * Game mode: the 384x224 CPS1 picture scaled by an integer S vertically,
+ * split between the CPU (draw scale m) and the hardware scaler HVS (factor
+ * k), S = m * k; the framebuffer is (display height / k) lines high and the
+ * HVS enlarges it exactly k times vertically. Horizontally:
+ *   - 4:3 (the arcade monitor's shape; CPS1 pixels are not square): the CPU
+ *     draws the picture mx times wider and the framebuffer width is chosen so
+ *     that the HVS stretches it to 4/3 of the picture height on screen;
+ *   - square pixels: the same integer factor in both directions.
+ * Black borders are drawn by us inside the framebuffer.
  * Filters (applied while drawing, no extra buffering, no added lag):
  *   scanlines in three strengths (dark rows at 75%, 50% or 25%).
  *
@@ -50,18 +53,24 @@ public:
 
 	boolean Initialize (void);		// console mode
 
-	// Game mode for a filter; bAllowHVS = FALSE forces CPU scaling
-	boolean SetGameMode (unsigned nFilter, boolean bAllowHVS);
+	// Game mode for a filter; bAllowHVS = FALSE forces CPU scaling;
+	// bAspect43 = the picture 4:3 on screen, else square pixels
+	boolean SetGameMode (unsigned nFilter, boolean bAllowHVS, boolean bAspect43);
 	boolean SetConsoleMode (void);
 	boolean IsGameMode (void) const		{ return m_bGameMode; }
 
 	unsigned GetWidth (void) const		{ return m_nDispW; }	// HDMI resolution
 	unsigned GetHeight (void) const		{ return m_nDispH; }
-	unsigned GetScale (void) const		{ return m_nScale; }	// total integer scale S
-	unsigned GetHVSFactor (void) const	{ return m_nK; }	// k (1 = CPU only)
+	unsigned GetScale (void) const		{ return m_nScale; }	// vertical integer scale S
+	unsigned GetHVSFactor (void) const	{ return m_nK; }	// vertical k (1 = CPU only)
+	unsigned GetCPUScaleX (void) const	{ return m_nMX; }	// CPU draw scales
+	unsigned GetCPUScaleY (void) const	{ return m_nM; }
 	unsigned GetFilter (void) const		{ return m_nFilter; }
+	boolean IsAspect43 (void) const		{ return m_bAspect43; }
 	unsigned GetFBWidth (void) const	{ return m_nWidth; }	// framebuffer before the HVS
 	unsigned GetFBHeight (void) const	{ return m_nHeight; }
+	unsigned GetScreenGameW (void) const	{ return m_nScreenW; }	// picture size on screen
+	unsigned GetScreenGameH (void) const	{ return GAME_H * m_nScale; }
 
 	// Text grid (character cells) of the console
 	unsigned GetColumns (void) const;
@@ -112,9 +121,12 @@ private:
 	boolean	 m_bGameMode;
 
 	unsigned m_nTextScale;			// console text scale (1 or 2)
-	unsigned m_nScale;			// S
-	unsigned m_nK;				// HVS factor
-	unsigned m_nM;				// CPU draw scale
+	unsigned m_nScale;			// S (vertical)
+	unsigned m_nK;				// HVS factor (vertical)
+	unsigned m_nM;				// CPU draw scale, vertical
+	unsigned m_nMX;				// CPU draw scale, horizontal
+	boolean	 m_bAspect43;
+	unsigned m_nScreenW;			// picture width on screen
 	unsigned m_nFilter;
 	unsigned m_nGameX, m_nGameY;		// game rectangle in the framebuffer
 	unsigned m_nStatusY;

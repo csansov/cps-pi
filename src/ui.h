@@ -44,7 +44,7 @@ struct TButtonHint
 
 struct TGameEntry
 {
-	char	Name[48];	// title from zipname.cps1 (or the file name)
+	char	Name[64];	// title from zipname.cps1 (or the file name)
 	char	File[16];	// zip name without extension (MAME set name)
 };
 
