@@ -616,14 +616,20 @@ static double m68k_nominal_clock(void)
    cpu.<set>= in cpspi.cfg move it between 50 and 70. */
 #if EMU_SYSTEM == CPS2
 /* CPS2: MAME has run the 68000 at 0.7375 of its 16 MHz (11.8 MHz) since
-   2008 to compensate for "RAM access waitstates etc." it does not emulate;
-   that is the centre until a board says otherwise */
-#define CPU_PERCENT_DEFAULT	74
+   2008 to compensate for "RAM access waitstates etc." it does not emulate,
+   and that is still too fast: Super Turbo's speed is not paced by the
+   frame but by a tight loop of the 68000 (a spin counter, one game tick
+   every 97 spins at speed 3), so the game runs exactly as fast as the CPU
+   gets through memory, and a board owner found 64% still fast. 60 is the
+   centre, with a wide range, until a board fixes it */
+#define CPU_PERCENT_DEFAULT	60
+#define CPU_PERCENT_RANGE	20
 #else
 #define CPU_PERCENT_DEFAULT	60
+#define CPU_PERCENT_RANGE	10
 #endif
-#define CPU_PERCENT_MIN		(CPU_PERCENT_DEFAULT - 10)
-#define CPU_PERCENT_MAX		(CPU_PERCENT_DEFAULT + 10)
+#define CPU_PERCENT_MIN		(CPU_PERCENT_DEFAULT - CPU_PERCENT_RANGE)
+#define CPU_PERCENT_MAX		(CPU_PERCENT_DEFAULT + CPU_PERCENT_RANGE)
 static unsigned s_cpu_override;		/* 0: the default */
 
 unsigned core_cpu_percent(void)
@@ -634,6 +640,11 @@ unsigned core_cpu_percent(void)
 unsigned core_cpu_percent_centre(void)
 {
 	return CPU_PERCENT_DEFAULT;
+}
+
+unsigned core_cpu_percent_range(void)
+{
+	return CPU_PERCENT_RANGE;
 }
 
 double lr_m68k_clock(void)

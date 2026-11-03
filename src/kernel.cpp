@@ -2271,10 +2271,10 @@ void CKernel::RunGame (void)
 				// 60% centre (50-70%): 1 with left and right, 5 with buttons
 				// 1 and 3, kept for this set
 				int nDir = (nNew & BTN_LEFT) ? -1 : (nNew & BTN_RIGHT) ? 1 : (nNew & BTN_3) ? -5 : 5;
-				int nCentre = (int) core_cpu_percent_centre ();
+				int nCentre = (int) core_cpu_percent_centre (), nRange = (int) core_cpu_percent_range ();
 				int nPercent = (int) core_cpu_percent () + nDir;
-				if (nPercent < nCentre - 10) nPercent = nCentre - 10;
-				if (nPercent > nCentre + 10) nPercent = nCentre + 10;
+				if (nPercent < nCentre - nRange) nPercent = nCentre - nRange;
+				if (nPercent > nCentre + nRange) nPercent = nCentre + nRange;
 				core_set_cpu_percent ((unsigned) nPercent);
 				SetCpuPercentFor (m_pGames[m_nLoaded].File, (unsigned) nPercent);
 				bCpuChanged = TRUE;
@@ -2350,7 +2350,7 @@ void CKernel::RunGame (void)
 				}
 				char Speed[20];
 				int nOffset = (int) core_cpu_percent () - (int) core_cpu_percent_centre ();
-				snprintf (Speed, sizeof Speed, "%s%d", nOffset > 0 ? "+" : "", nOffset);
+				snprintf (Speed, sizeof Speed, "%s%d (%u%%)", nOffset > 0 ? "+" : "", nOffset, core_cpu_percent ());
 				Items[GmSpeed].pValue = Speed;
 				const char *pMsg = MenuMsg;
 				u32 nMsgColor = nMenuMsgColor;
@@ -2361,7 +2361,7 @@ void CKernel::RunGame (void)
 				}
 				else if (!MenuMsg[0] && nMenuSel == GmSpeed)
 				{
-					pMsg = "-10 SLOWER  0 = THE BOARD  +10 FASTER";
+					pMsg = "LEFT RIGHT 1  BUTTONS 1 3 5  LOWER = SLOWER";
 					nMsgColor = UI_DIM;
 				}
 				static const TButtonHint Hints[2] = {{'1', "SELECT"}, {'2', "RESUME"}};
