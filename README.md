@@ -70,11 +70,15 @@ vblank callback order and the board's timing).
   emulator reproduces that (MAME Testers 408, open since 2008), so the
   games run faster than the boards: the Street Fighter II games visibly,
   Hyper Fighting most. Until the stalls are emulated, the 68000 gets a
-  share of its clock per game (65% for Hyper Fighting, 75% for World
-  Warrior and Champion Edition, 100% elsewhere), which PCB owners found
-  brings MAME to the board's speed. The in-game menu's CPU SPEED item
-  changes it 5% at a time while playing and keeps it per set
-  (`cpu.<set>=NN` in `cpspi.cfg`; `cpu=NN` for every game).
+  share of its clock per game: 60% for World Warrior and Champion Edition
+  and 65% for Hyper Fighting, calibrated against a CPS1 board by timing
+  rounds (and in line with what PCB owners found for MAME: 65% for Hyper
+  Fighting, 60-65% for Captain Commando); every other game gets 62%, the
+  middle of that band, until it is measured. The in-game menu's CPU SPEED
+  item changes it while playing (1% with left and right, 5% with buttons 1
+  and 3) and keeps it per set (`cpu.<set>=NN` in `cpspi.cfg`; `cpu=NN` for
+  every game). The sound is not affected: the music's tempo comes from the
+  YM2151's own timers.
 - The board's input timing. The core's vblank callback hands the finished
   picture of the frame to the kernel *before* raising the interrupt whose
   handler reads the input ports; the kernel flips the picture, waits until

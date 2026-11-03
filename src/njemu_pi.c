@@ -595,15 +595,19 @@ static double m68k_nominal_clock(void)
    their DMA; no emulator reproduces those wait states (MAME Testers 408, open
    since 2008), so the games run faster than the boards: the Street Fighter II
    games visibly so, Hyper Fighting most. Until the stalls are emulated the
-   68000 gets a share of its clock, per game, from what PCB owners measured
-   against MAME (65% for Hyper Fighting); cpu= / cpu.<set>= in cpspi.cfg and
-   the in-game menu set it. Families by set name prefix (sf2hf before sf2),
-   then by parent. */
+   68000 gets a share of its clock, per game: the Street Fighter II values
+   were calibrated against a CPS1 board by timing rounds (60% for World
+   Warrior and Champion Edition, 65% for Hyper Fighting) and agree with what
+   PCB owners found for MAME (65% for Hyper Fighting, 60-65% for Captain
+   Commando); every other game gets the middle of that band, 62%, until it
+   is measured. cpu= / cpu.<set>= in cpspi.cfg and the in-game menu set it.
+   Families by set name prefix (sf2hf before sf2), then by parent. */
+#define CPU_PERCENT_DEFAULT	62
 static const struct { const char *prefix; unsigned percent; } s_cpu_defaults[] = {
 	{"sf2hf", 65},
-	{"sf2ce", 75},
-	{"sf2",   75},
-	{NULL, 100}
+	{"sf2ce", 60},
+	{"sf2",   60},
+	{NULL, CPU_PERCENT_DEFAULT}
 };
 static unsigned s_cpu_override;		/* 0: the table */
 
@@ -620,7 +624,7 @@ unsigned core_cpu_percent(void)
 	if (s_cpu_override) return s_cpu_override;
 	unsigned p = cpu_default_percent(game_name);
 	if (!p && parent_name[0]) p = cpu_default_percent(parent_name);
-	return p ? p : 100;
+	return p ? p : CPU_PERCENT_DEFAULT;
 }
 
 double lr_m68k_clock(void)

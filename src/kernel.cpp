@@ -2263,17 +2263,18 @@ void CKernel::RunGame (void)
 			if (nNew & BTN_UP)	{ nMenuSel = (nMenuSel + GmCount - 1) % GmCount; MenuMsg[0] = '\0'; }
 			if (nNew & BTN_DOWN)	{ nMenuSel = (nMenuSel + 1) % GmCount; MenuMsg[0] = '\0'; }
 
-			if (nMenuSel == GmSpeed && (nNew & (BTN_LEFT | BTN_RIGHT | BTN_1)))
+			if (nMenuSel == GmSpeed && (nNew & (BTN_LEFT | BTN_RIGHT | BTN_1 | BTN_3)))
 			{
-				// the 68000's share of its clock, 5% at a time, kept for this set
-				int nDir = (nNew & BTN_LEFT) ? -5 : 5;
+				// the 68000's share of its clock: 1% with left and right, 5%
+				// with buttons 1 and 3, kept for this set
+				int nDir = (nNew & BTN_LEFT) ? -1 : (nNew & BTN_RIGHT) ? 1 : (nNew & BTN_3) ? -5 : 5;
 				int nPercent = (int) core_cpu_percent () + nDir;
 				if (nPercent < 50) nPercent = 50;
 				if (nPercent > 100) nPercent = 100;
 				core_set_cpu_percent ((unsigned) nPercent);
 				SetCpuPercentFor (m_pGames[m_nLoaded].File, (unsigned) nPercent);
 				bCpuChanged = TRUE;
-				nNew &= ~BTN_1;
+				nNew &= ~(BTN_1 | BTN_3);
 			}
 
 			if (nNew & BTN_2)
@@ -2355,7 +2356,7 @@ void CKernel::RunGame (void)
 				}
 				else if (!MenuMsg[0] && nMenuSel == GmSpeed)
 				{
-					pMsg = "LOWER = MORE LIKE THE BOARD'S WAIT STATES";
+					pMsg = "LEFT RIGHT 1%  BUTTONS 1 3 5%  LOWER = SLOWER";
 					nMsgColor = UI_DIM;
 				}
 				static const TButtonHint Hints[2] = {{'1', "SELECT"}, {'2', "RESUME"}};
