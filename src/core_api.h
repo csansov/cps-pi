@@ -12,6 +12,13 @@
 extern "C" {
 #endif
 
+/* ---- the cores a kernel carries: CPS1, CPS2 or both (core_dispatch.c) ---- */
+#define CORE_SYS_CPS1	1
+#define CORE_SYS_CPS2	2
+unsigned core_systems (void);		/* bit mask of the cores present */
+unsigned core_system (void);		/* the selected one (CORE_SYS_*) */
+void core_select (unsigned system);	/* before core_load; ignored if that core is absent */
+
 /* ---- services provided by the kernel ---- */
 uint64_t cpspi_ticks_us (void);		/* monotonic microseconds */
 void cpspi_delay_us (unsigned us);

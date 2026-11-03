@@ -342,7 +342,10 @@ void CUI::DrawList (const TGameEntry *pGames, unsigned nCount, unsigned nSel, co
 		*p = '\0';
 	}
 	Text (UI_W - 18 - (int) strlen (Count) * 8, 178, Count, 0x7A8290);
-	Text (18, 178, pGames[nSel].File, 0x7A8290);
+	char Info[32];
+	strcpy (Info, pGames[nSel].File);
+	strcat (Info, pGames[nSel].System == 2 ? ".zip   CPS2" : ".zip   CPS1");
+	Text (18, 178, Info, 0x7A8290);
 
 	if (pMessage && pMessage[0])
 	{

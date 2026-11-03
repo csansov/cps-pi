@@ -4,11 +4,14 @@
 #ifndef CPSPI_H
 #define CPSPI_H
 
-#define CPSPI_VERSION	"0.9.0"
+#define CPSPI_VERSION	"0.10.0"
 
 /* the system this kernel emulates: set by the Makefile (-DCPSPI_SYSTEM=\"CPS2\"
    -DCPSPI_SYS_EXT=\"cps2\" -DCPSPI_CPS2); CPS1 unless said otherwise */
-#ifndef CPSPI_SYSTEM
+#if defined(CPSPI_UNIFIED)
+#define CPSPI_SYSTEM	"CPS1/CPS2"
+#define CPSPI_SYS_EXT	"cps1"
+#elif !defined(CPSPI_SYSTEM)
 #define CPSPI_SYSTEM	"CPS1"
 #define CPSPI_SYS_EXT	"cps1"
 #define CPSPI_CPS1	1

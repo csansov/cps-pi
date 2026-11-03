@@ -620,9 +620,9 @@ static double m68k_nominal_clock(void)
    and that is still too fast: Super Turbo's speed is not paced by the
    frame but by a tight loop of the 68000 (a spin counter, one game tick
    every 97 spins at speed 3), so the game runs exactly as fast as the CPU
-   gets through memory, and a board owner found 64% still fast. 60 is the
-   centre, with a wide range, until a board fixes it */
-#define CPU_PERCENT_DEFAULT	60
+   gets through memory: a board owner, timing rounds against his CPS2 at
+   speed 3, found 56% the closest; a wide range around it */
+#define CPU_PERCENT_DEFAULT	56
 #define CPU_PERCENT_RANGE	20
 #else
 #define CPU_PERCENT_DEFAULT	60
@@ -804,4 +804,14 @@ int core_qsound(void) { return 1; }		/* every CPS2 board */
 #else
 int core_qsound(void) { return machine_sound_type == SOUND_QSOUND; }
 #endif
+
+/* this core alone (a kernel with both cores answers from core_dispatch.c) */
+#if EMU_SYSTEM == CPS2
+unsigned core_systems(void) { return CORE_SYS_CPS2; }
+unsigned core_system(void) { return CORE_SYS_CPS2; }
+#else
+unsigned core_systems(void) { return CORE_SYS_CPS1; }
+unsigned core_system(void) { return CORE_SYS_CPS1; }
+#endif
+void core_select(unsigned system) { (void)system; }
 const char *core_game_name(void) { return game_name; }

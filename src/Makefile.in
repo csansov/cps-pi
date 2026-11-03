@@ -5,13 +5,43 @@ CIRCLEHOME = @CIRCLEHOME@
 SRC = @SRC@
 MINIZ = @MINIZ@
 NJ = njemu
-# the system: cps1 or cps2 (NJEMU directory) and CPS1 or CPS2 (no trailing
-# blanks: the values go inside quotes)
+# the system: cps1 or cps2 (NJEMU directory, one core) or all (both cores,
+# prefixed objects in cores/, see build.sh); no trailing blanks: the values
+# go inside quotes
 SYS = @SYS@
 SYSU = @SYSU@
 
-# the NJEMU core (same file lists as its libretro build, minus the libretro
-# frontend files, which njemu_pi.c replaces)
+LIBS	= $(CIRCLEHOME)/addon/fatfs/libfatfs.a \
+	  $(CIRCLEHOME)/addon/SDCard/libsdcard.a \
+	  $(CIRCLEHOME)/lib/usb/libusb.a \
+	  $(CIRCLEHOME)/lib/input/libinput.a \
+	  $(CIRCLEHOME)/lib/sound/libsound.a \
+	  $(CIRCLEHOME)/lib/fs/libfs.a \
+	  $(CIRCLEHOME)/lib/libcircle.a
+
+C_STANDARD = -std=gnu11
+OPTIMIZE = -O2
+
+DEFINE += -DNDEBUG -DMINIZ_NO_STDIO -DMINIZ_NO_TIME
+CFLAGS += -fno-math-errno -fno-strict-aliasing -Wno-unused-parameter -Wno-sign-compare \
+	  -Wno-unused-variable -Wno-unused-function -Wno-unused-but-set-variable \
+	  -Wno-missing-field-initializers -Wno-implicit-fallthrough
+
+ifeq ($(SYS),all)
+
+# ---- both cores: the frontend, the dispatcher and the prefixed core objects ----
+CORE_OBJS = $(wildcard cores/*.o)
+OBJS	= main.o kernel.o profile.o video.o fontdata.o input.o audio.o ui.o \
+	  shim.o pi_file.o png.o miniz.o core_dispatch.o $(CORE_OBJS)
+EXTRAINCLUDE = -I $(SRC) -I $(SRC)/compat -I $(MINIZ)
+DEFINE += -DCPSPI_UNIFIED
+
+include $(CIRCLEHOME)/Rules.mk
+
+else
+
+# ---- one core: the NJEMU file list of its libretro build, minus the libretro
+# frontend files, which njemu_pi.c replaces ----
 NJ_COMMON_OBJS = $(NJ)/desktop/desktop_ui_text.o $(NJ)/common/ui_text_driver.o \
 	  $(NJ)/common/loadrom.o $(NJ)/common/cache.o \
 	  $(NJ)/zip/zfile.o $(NJ)/zip/unzip.o $(NJ)/sound/sndintrf.o \
@@ -35,25 +65,8 @@ NJ_OBJS = $(NJ_COMMON_OBJS) $(NJ_SYS_OBJS)
 
 OBJS	= main.o kernel.o profile.o video.o fontdata.o input.o audio.o ui.o \
 	  shim.o pi_file.o png.o miniz.o njemu_pi.o $(NJ_OBJS)
-
-LIBS	= $(CIRCLEHOME)/addon/fatfs/libfatfs.a \
-	  $(CIRCLEHOME)/addon/SDCard/libsdcard.a \
-	  $(CIRCLEHOME)/lib/usb/libusb.a \
-	  $(CIRCLEHOME)/lib/input/libinput.a \
-	  $(CIRCLEHOME)/lib/sound/libsound.a \
-	  $(CIRCLEHOME)/lib/fs/libfs.a \
-	  $(CIRCLEHOME)/lib/libcircle.a
-
 EXTRAINCLUDE = -I $(NJ) -I $(NJ)/zip -I $(NJ)/$(SYS) -I $(SRC) -I $(SRC)/compat -I $(MINIZ)
-
-C_STANDARD = -std=gnu11
-OPTIMIZE = -O2
-
-DEFINE += -DNDEBUG -DMINIZ_NO_STDIO -DMINIZ_NO_TIME \
-	  -DCPSPI_SYSTEM=\"$(SYSU)\" -DCPSPI_SYS_EXT=\"$(SYS)\" -DCPSPI_$(SYSU)
-CFLAGS += -fno-math-errno -fno-strict-aliasing -Wno-unused-parameter -Wno-sign-compare \
-	  -Wno-unused-variable -Wno-unused-function -Wno-unused-but-set-variable \
-	  -Wno-missing-field-initializers -Wno-implicit-fallthrough
+DEFINE += -DCPSPI_SYSTEM=\"$(SYSU)\" -DCPSPI_SYS_EXT=\"$(SYS)\" -DCPSPI_$(SYSU)
 
 include $(CIRCLEHOME)/Rules.mk
 
@@ -68,5 +81,7 @@ $(NJ_OBJS): CFLAGS += -Wno-implicit-int -Wno-implicit-function-declaration -Wno-
 # the emulator core is where the time goes: optimise it harder
 NJ_OPTIMIZE ?= -O3
 $(NJ_OBJS): OPTIMIZE = $(NJ_OPTIMIZE)
+
+endif
 
 -include $(DEPS)

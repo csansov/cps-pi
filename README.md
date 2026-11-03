@@ -133,27 +133,34 @@ run, but sideways), Pi 4 kernel.
 
 ## CPS2
 
-The same kernel built with NJEMU's CPS2 core (`./build.sh 3 cps2`) gives
-`kernel8-cps2.img`: Super Street Fighter II X / Turbo and the rest of the
-CPS2 catalogue, decrypted on the fly from the keys NJEMU carries, with
-everything above (the 59.637 Hz frame, the controls at the vblank, the
-sound in blocks, the picture by four cores, the bezel). `config.txt`
-chooses the kernel (`kernel=kernel8-cps2.img` in the `[pi3]` section); the
-`cpspi` folder, the controls, the settings and the log are shared, and the
-game list shows the CPS2 sets found in `cpspi/roms` (database
-`cpspi/rominfo.cps2`). The 68000 is a 16 MHz part on every CPS2 board;
-MAME has run it at 74% (11.8 MHz) since 2008 to stand in for the wait
-states it does not emulate, and that is the centre of the CPU SPEED scale
-here (64-84%) until a board says otherwise. The QSound is NJEMU's: the
-sample-based emulation, not the DSP program dumped in 2019.
+The kernel carries both cores: NJEMU's CPS1 and CPS2 cores are compiled
+separately, every symbol of each is prefixed (`objcopy --redefine-syms`)
+and `src/core_dispatch.c` joins them, so one `kernel8.img` lists the CPS1
+and the CPS2 games found in `cpspi/roms` together (databases
+`cpspi/rominfo.cps1` and `cpspi/rominfo.cps2`; the list shows the system
+under the selected game) and everything above applies to both: the
+59.637 Hz frame, the controls at the vblank, the sound in blocks, the
+picture by four cores, the bezel. The CPS2 programs are decrypted on the
+fly from the keys NJEMU carries.
+
+The CPS2 68000 is a 16 MHz part. Super Street Fighter II Turbo / X does
+not pace its game by the frame but by a tight loop of the CPU (a spin
+counter: one game tick every 97 spins at speed 3), so its speed is
+exactly the CPU's throughput through memory, which the board's wait
+states cut and no emulator reproduces: MAME's flat 74% (11.8 MHz) is
+still too fast. Timed against a real CPS2 board at speed 3, 56% came
+closest, so that is the CPS2 centre of the CPU SPEED scale, with a wide
+range (-20 to +20, 36-76%); the menu shows the offset and the percent.
+The QSound is NJEMU's sample-based emulation, not the DSP program dumped
+in 2019.
 
 ## SD card
 
 Format a card as FAT32 and copy the contents of `dist/sd` (from a release, or
 after building) to its root: the Raspberry Pi firmware, `config.txt`,
-`cmdline.txt`, `kernel8.img` (CPS1), `kernel8-cps2.img` (CPS2) and the
-`cpspi` folder with `rominfo.cps1`, `zipname.cps1`, `rominfo.cps2` and
-`zipname.cps2`. Put the games in `cpspi/roms`.
+`cmdline.txt`, `kernel8.img` and the `cpspi` folder with `rominfo.cps1`,
+`zipname.cps1`, `rominfo.cps2` and `zipname.cps2`. Put the games of both
+systems in `cpspi/roms`.
 
 `config.txt` selects 1080p at 60 Hz; for 720p change `hdmi_mode=16` to
 `hdmi_mode=4`. The `[pi3]` section has a commented overclock (`arm_freq=1300`,

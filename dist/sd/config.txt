@@ -37,9 +37,7 @@ core_freq_fixed=1
 
 # Overclock: remove the # in front of arm_freq (heatsink needed)
 [pi3]
-# kernel8.img emulates the CPS1, kernel8-cps2.img the CPS2: pick one
 kernel=kernel8.img
-#kernel=kernel8-cps2.img
 #arm_freq=1300
 #over_voltage=2
 

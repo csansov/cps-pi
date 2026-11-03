@@ -65,7 +65,7 @@ private:
 	void RedrawConsole (void);
 	char *LoadText (const char *pPath, size_t *pSize);
 	void ScanGames (void);
-	const char *TitleOf (const char *pName) const;
+	const char *TitleOf (const char *pName, unsigned nSystem) const;
 	boolean LoadGame (unsigned nIndex);
 	void UnloadGame (void);
 	void Benchmark (void);
@@ -135,7 +135,7 @@ private:
 	TGameEntry		*m_pGames;
 	unsigned		 m_nGames;
 	int			 m_nLoaded;	// index in m_pGames, -1 = none
-	char			*m_pTitles;	// zipname.cps1 text
+	char			*m_pTitles[2];	// zipname.cps1 / zipname.cps2 texts
 
 	// frame pacing / statistics
 	boolean			 m_bVSync;

@@ -29,8 +29,6 @@ void cpspi_png_free_rgb (void *p);
 #define ROMS_DIR	CPSPI_DIR "/roms"
 #define NVRAM_DIR	CPSPI_DIR "/nvram"
 #define SHOT_DIR	CPSPI_DIR "/shots"
-#define DB_PATH		CPSPI_DIR "/rominfo." CPSPI_SYS_EXT
-#define NAMES_PATH	CPSPI_DIR "/zipname." CPSPI_SYS_EXT
 #define LOG_PATH	CPSPI_DIR "/LOG.TXT"
 #define BENCH_PATH	CPSPI_DIR "/BENCH.TXT"
 #define BENCH_FLAG	CPSPI_DIR "/BENCH"
@@ -422,7 +420,6 @@ CKernel::CKernel (void)
 	m_pGames (0),
 	m_nGames (0),
 	m_nLoaded (-1),
-	m_pTitles (0),
 	m_bVSync (TRUE),
 	m_bStatusOn (FALSE),
 	m_nClearStatus (0),
@@ -439,6 +436,7 @@ CKernel::CKernel (void)
 {
 	s_pThis = this;
 	m_LastRaw[0] = '\0';
+	m_pTitles[0] = m_pTitles[1] = 0;
 }
 
 CKernel::~CKernel (void)
@@ -646,15 +644,16 @@ char *CKernel::LoadText (const char *pPath, size_t *pSize)
 }
 
 // "name,Title" lines of zipname.cps1
-const char *CKernel::TitleOf (const char *pName) const
+const char *CKernel::TitleOf (const char *pName, unsigned nSystem) const
 {
 	static char Title[64];
-	if (m_pTitles == 0)
+	const char *pTitles = nSystem >= 1 && nSystem <= 2 ? m_pTitles[nSystem - 1] : 0;
+	if (pTitles == 0)
 	{
 		return 0;
 	}
 	size_t nLen = strlen (pName);
-	const char *p = m_pTitles;
+	const char *p = pTitles;
 	while (*p)
 	{
 		const char *pEnd = p;
@@ -680,59 +679,86 @@ const char *CKernel::TitleOf (const char *pName) const
 	return 0;
 }
 
-// The zips in cpspi/roms that the core's database knows (FILENAME( name,
-// parent, ... ) lines of rominfo.<system>); a clone needs its parent zip, or its ROMs inside (merged set).
+// The zips in cpspi/roms that the cores' databases know (FILENAME( name,
+// parent, ... ) lines of rominfo.cps1 / rominfo.cps2); a clone needs its
+// parent zip, or its ROMs inside (merged set). A kernel with both cores
+// lists the games of both systems together.
 void CKernel::ScanGames (void)
 {
 	m_pGames = new TGameEntry[MaxGames];
 	m_nGames = 0;
 
-	size_t nSize = 0;
-	char *pDB = LoadText (DB_PATH, &nSize);
-	if (pDB == 0)
-	{
-		Fatal (CPSPI_ERR_DB, "cpspi/rominfo." CPSPI_SYS_EXT " not found or unreadable");
-	}
-	m_pTitles = LoadText (NAMES_PATH, &nSize);
-	if (m_pTitles == 0)
-	{
-		Log ("  zipname." CPSPI_SYS_EXT " not found: the list shows the file names", COLOR_ERR);
-	}
-
-	// supported sets and their parents
-	struct TSet { char Name[16]; char Parent[16]; };
-	static TSet Sets[512];
+	struct TSet { char Name[16]; char Parent[16]; unsigned char System; };
+	static TSet Sets[1024];
+	static const char *const Ext[3] = {"", "cps1", "cps2"};
+	static const char *const SysName[3] = {"", "CPS1", "CPS2"};
 	unsigned nSets = 0;
-	for (const char *p = pDB; *p && nSets < 512; )
-	{
-		const char *pEnd = p;
-		while (*pEnd && *pEnd != '\n') pEnd++;
-		if (strncmp (p, "FILENAME(", 9) == 0)
-		{
-			const char *q = p + 9;
-			char *pOut[2] = {Sets[nSets].Name, Sets[nSets].Parent};
-			boolean bOK = TRUE;
-			for (int f = 0; f < 2 && bOK; f++)
-			{
-				while (q < pEnd && *q == ' ') q++;
-				unsigned n = 0;
-				while (q < pEnd && *q != ',' && *q != ' ' && *q != ')' && n < 15)
-				{
-					pOut[f][n++] = *q++;
-				}
-				pOut[f][n] = '\0';
-				while (q < pEnd && *q != ',') q++;
-				if (q < pEnd) q++;
-				if (n == 0) bOK = FALSE;
-			}
-			if (bOK) nSets++;
-		}
-		p = *pEnd ? pEnd + 1 : pEnd;
-	}
-	delete [] pDB;
 	char Line[160];
-	snprintf (Line, sizeof Line, "Database: %u " CPSPI_SYSTEM " sets", nSets);
-	Log (Line, COLOR_TEXT);
+
+	for (unsigned sys = 1; sys <= 2; sys++)
+	{
+		if (!(core_systems () & sys))
+		{
+			continue;
+		}
+		char Path[64];
+		size_t nSize = 0;
+		snprintf (Path, sizeof Path, "%s/rominfo.%s", CPSPI_DIR, Ext[sys]);
+		char *pDB = LoadText (Path, &nSize);
+		if (pDB == 0)
+		{
+			snprintf (Line, sizeof Line, "  cpspi/rominfo.%s not found or unreadable: no %s games", Ext[sys], SysName[sys]);
+			Log (Line, COLOR_ERR);
+			continue;
+		}
+		snprintf (Path, sizeof Path, "%s/zipname.%s", CPSPI_DIR, Ext[sys]);
+		m_pTitles[sys - 1] = LoadText (Path, &nSize);
+		if (m_pTitles[sys - 1] == 0)
+		{
+			snprintf (Line, sizeof Line, "  zipname.%s not found: the list shows the file names", Ext[sys]);
+			Log (Line, COLOR_ERR);
+		}
+
+		// supported sets and their parents
+		unsigned nBefore = nSets;
+		for (const char *p = pDB; *p && nSets < 1024; )
+		{
+			const char *pEnd = p;
+			while (*pEnd && *pEnd != '\n') pEnd++;
+			if (strncmp (p, "FILENAME(", 9) == 0)
+			{
+				const char *q = p + 9;
+				char *pOut[2] = {Sets[nSets].Name, Sets[nSets].Parent};
+				boolean bOK = TRUE;
+				for (int f = 0; f < 2 && bOK; f++)
+				{
+					while (q < pEnd && *q == ' ') q++;
+					unsigned n = 0;
+					while (q < pEnd && *q != ',' && *q != ' ' && *q != ')' && n < 15)
+					{
+						pOut[f][n++] = *q++;
+					}
+					pOut[f][n] = '\0';
+					while (q < pEnd && *q != ',') q++;
+					if (q < pEnd) q++;
+					if (n == 0) bOK = FALSE;
+				}
+				if (bOK)
+				{
+					Sets[nSets].System = (unsigned char) sys;
+					nSets++;
+				}
+			}
+			p = *pEnd ? pEnd + 1 : pEnd;
+		}
+		delete [] pDB;
+		snprintf (Line, sizeof Line, "Database: %u %s sets", nSets - nBefore, SysName[sys]);
+		Log (Line, COLOR_TEXT);
+	}
+	if (nSets == 0)
+	{
+		Fatal (CPSPI_ERR_DB, "no cpspi/rominfo.cps1 or rominfo.cps2 found");
+	}
 
 	DIR Dir;
 	FILINFO Info;
@@ -773,7 +799,7 @@ void CKernel::ScanGames (void)
 			Log (Line, COLOR_ERR);
 			continue;
 		}
-		if (strcmp (pSet->Parent, CPSPI_SYS_EXT) != 0)
+		if (strcmp (pSet->Parent, Ext[pSet->System]) != 0)
 		{
 			char Path[128];
 			FILINFO PInfo;
@@ -790,7 +816,8 @@ void CKernel::ScanGames (void)
 
 		TGameEntry &G = m_pGames[m_nGames];
 		strcpy (G.File, Name);
-		const char *pTitle = TitleOf (Name);
+		G.System = pSet->System;
+		const char *pTitle = TitleOf (Name, pSet->System);
 		if (pTitle)
 		{
 			strncpy (G.Name, pTitle, sizeof G.Name - 1);
@@ -842,8 +869,9 @@ boolean CKernel::LoadGame (unsigned nIndex)
 
 	const TGameEntry &G = m_pGames[nIndex];
 	char Line[180];
-	snprintf (Line, sizeof Line, "Game: %s (%s.zip)", G.Name, G.File);
+	snprintf (Line, sizeof Line, "Game: %s (%s.zip, %s)", G.Name, G.File, G.System == 2 ? "CPS2" : "CPS1");
 	Log (Line, COLOR_TITLE);
+	core_select (G.System);
 
 	if (m_bQuiet && m_pUI)
 	{
@@ -1130,7 +1158,8 @@ void CKernel::Benchmark (void)
 	FormatMs (c, sizeof c, T.nMax); FormatMs (d, sizeof d, T.nMin);
 	snprintf (Line, sizeof Line, "  total                   %7s %7s %7s %7s", a, b, c, d);
 	REPORT (COLOR_TEXT);
-	snprintf (Line, sizeof Line, "Top speed: %u%% of a real " CPSPI_SYSTEM " (100%% = 59.64 fps)", nSpeed);
+	snprintf (Line, sizeof Line, "Top speed: %u%% of a real %s (100%% = 59.64 fps)", nSpeed,
+		  core_system () == CORE_SYS_CPS2 ? "CPS2" : "CPS1");
 	REPORT (nSpeed >= 150 ? COLOR_OK : COLOR_ERR);
 	snprintf (Line, sizeof Line, "Frames over 16.7 ms (too slow for full speed): %u of %u (%u.%u%%)",
 		  nOver, BENCH_FRAMES, nOver * 100 / BENCH_FRAMES, (nOver * 1000 / BENCH_FRAMES) % 10);

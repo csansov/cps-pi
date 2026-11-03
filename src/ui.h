@@ -46,6 +46,7 @@ struct TGameEntry
 {
 	char	Name[64];	// title from zipname.cps1 (or the file name)
 	char	File[16];	// zip name without extension (MAME set name)
+	unsigned char System;	// 1 = CPS1, 2 = CPS2 (CORE_SYS_*)
 };
 
 class CUI
