@@ -103,19 +103,31 @@ extern "C" void cpspi_delay_us (unsigned nMicros)
 	}
 }
 
-// ---- late input sampling --------------------------------------------------
-// The core calls LateInputs at its emulated vblank, right before the game's
-// interrupt handler reads the input ports: the pads (kept current by the USB
-// interrupts) are sampled at that moment instead of at the start of the frame.
+// ---- the vblank: picture and sound out, controls in --------------------------
+// The core calls CoreVBlank at its emulated vblank, inside core_frame: the
+// picture and the sound of the frame are complete and the game's interrupt
+// handler, which reads the input ports, has not run yet. The kernel queues
+// the sound, draws the picture and flips it (the display takes it at the
+// next vsync), then waits until the vsync is s_nInputMargin away and samples
+// the pads (kept current by the USB interrupts) at that moment: the game
+// reads controls as fresh as on the board, which reads its ports at its own
+// vblank, and only the handler's few lines run before the next frame begins.
+// There is no frame delay to tune: the slow part of the frame (the 68000
+// and the picture) runs right after the previous vsync, the wait comes
+// after it, and the controls go in at the end whatever the frame cost.
 // The game loop decides per frame which pads are ignored (buttons still held
 // from a menu) and the extra bits of the frame (coin pulse, TEST switch).
 
 static CInput *s_pLateInput;
-static volatile boolean s_bLateEnabled;
+static volatile boolean s_bLateEnabled;		// RunGame only (not the benchmark)
 static volatile boolean s_LateIgnore[CORE_MAX_PLAYERS];
 static volatile u32 s_LateExtra[CORE_MAX_PLAYERS];
 static boolean s_bLateChange;		// lag measurement: a pad report changed the
 static unsigned s_nLateChangeTicks;	// controls sampled at this vblank (its time)
+static unsigned s_nLastVSync;		// when the display's last vsync was seen
+static unsigned s_nInputMargin = 2000;	// controls sampled this long before the vsync (us)
+static unsigned s_tEmuEnd, s_tFlip, s_tSample;	// this frame: picture rendered, flipped, pads sampled
+static boolean s_bPresented;		// this frame went through CoreVBlank
 
 // pad bits -> core flags; while Select is held only the joystick goes through
 static u32 GameFlags (u32 n)
@@ -136,11 +148,26 @@ static u32 GameFlags (u32 n)
 	return f;
 }
 
-static void LateInputs (void)
+void CKernel::CoreVBlank (void)
 {
 	if (!s_bLateEnabled || s_pLateInput == 0)
 	{
 		return;
+	}
+	s_tEmuEnd = CTimer::GetClockTicks ();
+
+	// the frame's sound and picture, out (the bands were drawn before the frame)
+	const int16_t *pAudio;
+	unsigned nAudio = core_audio (&pAudio);
+	m_Audio.WriteFrame (pAudio, nAudio);
+	m_Video.DrawGame (core_video (), core_flipped ());
+	m_Video.Flip ();
+	s_tFlip = CTimer::GetClockTicks ();
+
+	// the controls, as late as the vsync allows
+	unsigned nTarget = s_nLastVSync + FRAME_US - s_nInputMargin;
+	while ((int) (CTimer::GetClockTicks () - nTarget) < 0)
+	{
 	}
 	unsigned nTicks;
 	if (s_pLateInput->TakeChange (&nTicks))
@@ -159,6 +186,13 @@ static void LateInputs (void)
 			core_set_input (p, GameFlags (s_pLateInput->Get (p)) | s_LateExtra[p]);
 		}
 	}
+	s_tSample = CTimer::GetClockTicks ();
+	s_bPresented = TRUE;
+}
+
+static void CoreVBlankHook (void)
+{
+	CKernel::Get ()->CoreVBlank ();
 }
 
 // ---- helpers --------------------------------------------------------------
@@ -234,11 +268,14 @@ struct THisto
 };
 
 static THisto s_HistEmu, s_HistWork, s_HistPeriod;
-static THisto s_HistLag;		// pad report -> start of scan-out of the frame that uses it
+static THisto s_HistRender;		// the core's own rendering of the picture (inside emu)
+static THisto s_HistDraw;		// picture + sound to the framebuffer and flip
+static THisto s_HistLag;		// pad report -> the vblank sample that used it
 static THisto s_HistSlack;		// frame ready (flip) -> vsync
+static THisto s_HistMargin;		// controls sampled -> vsync
+static THisto s_HistPost;		// controls sampled -> core_frame returned
 static unsigned s_nOverBudget, s_nMissedVSync, s_nWindowFrames;
 static unsigned s_nWindowStart;
-static unsigned s_nFrameDelayNow;	// microseconds after vsync before emulating (RunGame)
 
 static boolean HasZipExtension (const char *pName)
 {
@@ -315,7 +352,8 @@ CKernel::CKernel (void)
 	m_nFilter (FILTER_SCAN_MEDIUM),
 	m_bHVS (TRUE),
 	m_nAspect (ASPECT_43),
-	m_nFrameDelay (1)
+	m_nInputMarginMin (1000),
+	m_bMultiCore (TRUE)
 {
 	s_pThis = this;
 	m_LastRaw[0] = '\0';
@@ -839,7 +877,7 @@ const char *CKernel::SaveScreenshot (void)
 // full speed, with the sampling profiler; results in BENCH.TXT / PROFILE.TXT
 void CKernel::Benchmark (void)
 {
-	static unsigned Emu[BENCH_FRAMES], Draw[BENCH_FRAMES], Total[BENCH_FRAMES];
+	static unsigned Emu[BENCH_FRAMES], Draw[BENCH_FRAMES], Total[BENCH_FRAMES], Render[BENCH_FRAMES];
 	u64 nSamples = 0;
 
 	boolean bQuiet = m_bQuiet;
@@ -911,6 +949,7 @@ void CKernel::Benchmark (void)
 		Emu[i] = t1 - t0;
 		Draw[i] = t2 - t1;
 		Total[i] = t2 - t0;
+		Render[i] = core_render_us ();
 		const int16_t *pAudio;
 		nSamples += core_audio (&pAudio);
 		if (bSlow) nSlow++;
@@ -942,10 +981,11 @@ void CKernel::Benchmark (void)
 	m_Video.SetConsoleMode ();
 	RedrawConsole ();
 
-	TStats E, D, T;
+	TStats E, D, T, R;
 	ComputeStats (Emu, BENCH_FRAMES, &E);
 	ComputeStats (Draw, BENCH_FRAMES, &D);
 	ComputeStats (Total, BENCH_FRAMES, &T);
+	ComputeStats (Render, BENCH_FRAMES, &R);
 
 	char a[16], b[16], c[16], d[16];
 	char Report[4096];
@@ -978,9 +1018,13 @@ void CKernel::Benchmark (void)
 	FormatMs (c, sizeof c, E.nMax); FormatMs (d, sizeof d, E.nMin);
 	snprintf (Line, sizeof Line, "  emulation + audio       %7s %7s %7s %7s", a, b, c, d);
 	REPORT (COLOR_TEXT);
+	FormatMs (a, sizeof a, R.nAvg); FormatMs (b, sizeof b, R.nP99);
+	FormatMs (c, sizeof c, R.nMax); FormatMs (d, sizeof d, R.nMin);
+	snprintf (Line, sizeof Line, "    of which the picture  %7s %7s %7s %7s", a, b, c, d);
+	REPORT (COLOR_TEXT);
 	FormatMs (a, sizeof a, D.nAvg); FormatMs (b, sizeof b, D.nP99);
 	FormatMs (c, sizeof c, D.nMax); FormatMs (d, sizeof d, D.nMin);
-	snprintf (Line, sizeof Line, "  drawing to HDMI         %7s %7s %7s %7s", a, b, c, d);
+	snprintf (Line, sizeof Line, "  drawing to HDMI (x%u)   %7s %7s %7s %7s", m_Video.GetDrawCores (), a, b, c, d);
 	REPORT (COLOR_TEXT);
 	FormatMs (a, sizeof a, T.nAvg); FormatMs (b, sizeof b, T.nP99);
 	FormatMs (c, sizeof c, T.nMax); FormatMs (d, sizeof d, T.nMin);
@@ -1051,12 +1095,14 @@ void CKernel::ReportWindow (boolean bFinal)
 	}
 	unsigned nElapsed = CTimer::GetClockTicks () - s_nWindowStart;
 	unsigned nFPS100 = (unsigned) ((u64) s_nWindowFrames * 100 * 1000000 / nElapsed);
-	char ea[16], ep[16], em[16], wa[16], wp[16], pm[16];
+	char ea[16], ep[16], em[16], ra[16], wa[16], wp[16], da[16], pm[16];
 	FormatMs (ea, sizeof ea, s_HistEmu.Avg ());
 	FormatMs (ep, sizeof ep, s_HistEmu.P99 ());
 	FormatMs (em, sizeof em, s_HistEmu.nMax);
+	FormatMs (ra, sizeof ra, s_HistRender.Avg ());
 	FormatMs (wa, sizeof wa, s_HistWork.Avg ());
 	FormatMs (wp, sizeof wp, s_HistWork.P99 ());
+	FormatMs (da, sizeof da, s_HistDraw.Avg ());
 	FormatMs (pm, sizeof pm, s_HistPeriod.nMax);
 	unsigned qmin, qmax, und;
 	int adj;
@@ -1066,38 +1112,54 @@ void CKernel::ReportWindow (boolean bFinal)
 	VideoModeTag (Tag, sizeof Tag);
 	char Line[MaxLineLen];
 	snprintf (Line, sizeof Line,
-		  "[%s] %u frames, FPS %u.%02u | emu %s/%s/%s ms | emu+draw %s/%s ms (>16ms: %u)",
+		  "[%s] %u frames, FPS %u.%02u | emu %s/%s/%s ms (picture %s) | emu+draw %s/%s ms (>16ms: %u) | draw x%u %s ms",
 		  bFinal ? "partial" : "1 min", s_nWindowFrames, nFPS100 / 100, nFPS100 % 100,
-		  ea, ep, em, wa, wp, s_nOverBudget);
+		  ea, ep, em, ra, wa, wp, s_nOverBudget, m_Video.GetDrawCores (), da);
 	Log (Line, COLOR_TEXT);
 	snprintf (Line, sizeof Line,
-		  "   video %s x%u %s %s | frame delay %u.%u ms | max period %s ms, missed vsyncs %u | audio %u-%u, underruns %u, adj %d | %u MHz %u C",
+		  "   video %s x%u %s %s | max period %s ms, missed vsyncs %u | audio %u-%u, underruns %u, adj %d | %u MHz %u C",
 		  Tag, m_Video.GetScale (), m_Video.IsAspect43 () ? "4:3" : "SQ", FilterShort (m_Video.GetFilter ()),
-		  s_nFrameDelayNow / 1000, (s_nFrameDelayNow % 1000) / 100,
 		  pm, s_nMissedVSync, qmin, qmax, und, adj,
 		  m_CPUThrottle.GetClockRate () / 1000000, m_CPUThrottle.GetTemperature ());
 	Log (Line, COLOR_TEXT);
 
-	if (s_HistLag.nCount > 0)
+	if (s_HistMargin.nCount > 0)
 	{
-		char la[16], lm[16], lx[16], sa[16], sm[16];
-		FormatMs (la, sizeof la, s_HistLag.Avg ());
-		FormatMs (lm, sizeof lm, s_HistLag.nMin);
-		FormatMs (lx, sizeof lx, s_HistLag.nMax);
+		char ma[16], mn[16], mx[16], px[16], sa[16], sm[16];
+		FormatMs (ma, sizeof ma, s_HistMargin.Avg ());
+		FormatMs (mn, sizeof mn, s_HistMargin.nMin);
+		FormatMs (mx, sizeof mx, s_HistMargin.nMax);
+		FormatMs (px, sizeof px, s_HistPost.nMax);
 		FormatMs (sa, sizeof sa, s_HistSlack.Avg ());
 		FormatMs (sm, sizeof sm, s_HistSlack.nMin == ~0u ? 0 : s_HistSlack.nMin);
 		snprintf (Line, sizeof Line,
-			  "   lag: %u inputs, report->scan-out %s/%s/%s ms avg/min/max | "
-			  "ready before vsync %s/%s ms avg/min",
-			  s_HistLag.nCount, la, lm, lx, sa, sm);
+			  "   controls read %s/%s/%s ms before vsync avg/min/max (margin %u.%u, frame end after them %s max) | "
+			  "picture ready %s/%s ms before vsync avg/min",
+			  ma, mn, mx, s_nInputMargin / 1000, (s_nInputMargin % 1000) / 100, px, sa, sm);
+		Log (Line, COLOR_TEXT);
+	}
+	if (s_HistLag.nCount > 0)
+	{
+		char la[16], lm[16], lx[16];
+		FormatMs (la, sizeof la, s_HistLag.Avg ());
+		FormatMs (lm, sizeof lm, s_HistLag.nMin);
+		FormatMs (lx, sizeof lx, s_HistLag.nMax);
+		snprintf (Line, sizeof Line,
+			  "   lag: %u inputs, pad report -> read by the game %s/%s/%s ms avg/min/max "
+			  "(+ one frame to the screen, as on the board)",
+			  s_HistLag.nCount, la, lm, lx);
 		Log (Line, COLOR_TEXT);
 	}
 
 	s_HistEmu.Reset ();
+	s_HistRender.Reset ();
 	s_HistWork.Reset ();
+	s_HistDraw.Reset ();
 	s_HistPeriod.Reset ();
 	s_HistLag.Reset ();
 	s_HistSlack.Reset ();
+	s_HistMargin.Reset ();
+	s_HistPost.Reset ();
 	s_nOverBudget = s_nMissedVSync = s_nWindowFrames = 0;
 	s_nWindowStart = CTimer::GetClockTicks ();
 }
@@ -1195,29 +1257,29 @@ void CKernel::LoadConfig (void)
 	if (strstr (Text, "aspect=square"))		m_nAspect = ASPECT_PIXEL;
 	else if (strstr (Text, "aspect=4:3sharp"))	m_nAspect = ASPECT_43_SHARP;
 	else if (strstr (Text, "aspect=4:3"))		m_nAspect = ASPECT_43;
-	// framedelay=off / auto / N (milliseconds): how long after vsync the
-	// inputs are read and the frame emulated (later = less lag)
-	const char *pFD = strstr (Text, "framedelay=");
-	if (pFD)
+	// inputmargin=N (milliseconds, one decimal allowed, e.g. 1.5): the
+	// controls are read at least this long before the vsync (1.0 unless
+	// set; raise it if the log shows missed vsyncs with the frame time fine)
+	const char *pIM = strstr (Text, "inputmargin=");
+	if (pIM)
 	{
-		pFD += 11;
-		if (strncmp (pFD, "off", 3) == 0)	m_nFrameDelay = 0;
-		else if (strncmp (pFD, "auto", 4) == 0)	m_nFrameDelay = 1;
-		else
-		{
-			unsigned nMs = (unsigned) atoi (pFD);
-			m_nFrameDelay = nMs >= 1 && nMs <= 13 ? nMs * 1000 : 1;
-		}
+		pIM += 12;
+		unsigned nUs = (unsigned) atoi (pIM) * 1000;
+		while (*pIM >= '0' && *pIM <= '9') pIM++;
+		if (*pIM == '.' && pIM[1] >= '0' && pIM[1] <= '9') nUs += (pIM[1] - '0') * 100;
+		if (nUs >= 300 && nUs <= 8000) m_nInputMarginMin = nUs;
 	}
+	// multicore=off: core 0 draws the picture alone (cores 1-3 not started)
+	if (strstr (Text, "multicore=off"))	m_bMultiCore = FALSE;
 	// USB pads are polled every 1 ms (like usbhid.jspoll=1 on Linux);
 	// usbpoll=native keeps the interval requested by the device
 	if (strstr (Text, "usbpoll=native"))	g_nUSBInterruptPollMs = 0;
 
 	char Line[140];
-	snprintf (Line, sizeof Line, "Settings: aspect %s, filter %s, frame delay %s, USB polling %s",
+	snprintf (Line, sizeof Line, "Settings: aspect %s, filter %s, input margin %u.%u ms, USB polling %s%s",
 		  AspectName (m_nAspect), FilterName (m_nFilter),
-		  m_nFrameDelay == 0 ? "off" : (m_nFrameDelay == 1 ? "auto" : "fixed"),
-		  g_nUSBInterruptPollMs ? "1 ms" : "native");
+		  m_nInputMarginMin / 1000, (m_nInputMarginMin % 1000) / 100,
+		  g_nUSBInterruptPollMs ? "1 ms" : "native", m_bMultiCore ? "" : ", multicore off");
 	Log (Line, COLOR_TEXT);
 }
 
@@ -1226,15 +1288,16 @@ void CKernel::SaveConfig (void)
 	char Text[240];
 	snprintf (Text, sizeof Text, "aspect=%s\r\nfilter=%s\r\n%s", AspectName (m_nAspect),
 		  FilterName (m_nFilter), m_bHVS ? "" : "scaler=cpu\r\n");
-	if (m_nFrameDelay == 0)
+	if (m_nInputMarginMin != 1000)
 	{
-		strcat (Text, "framedelay=off\r\n");
+		char IM[32];
+		snprintf (IM, sizeof IM, "inputmargin=%u.%u\r\n", m_nInputMarginMin / 1000,
+			  (m_nInputMarginMin % 1000) / 100);
+		strcat (Text, IM);
 	}
-	else if (m_nFrameDelay > 1)
+	if (!m_bMultiCore)
 	{
-		char FD[24];
-		snprintf (FD, sizeof FD, "framedelay=%u\r\n", m_nFrameDelay / 1000);
-		strcat (Text, FD);
+		strcat (Text, "multicore=off\r\n");
 	}
 	if (g_nUSBInterruptPollMs == 0)
 	{
@@ -1245,11 +1308,11 @@ void CKernel::SaveConfig (void)
 
 void CKernel::RunSystemMenu (void)
 {
-	enum { SmAspect, SmFilter, SmDelay, SmControls, SmPower, SmCount };
+	enum { SmAspect, SmFilter, SmControls, SmPower, SmCount };
 
 	unsigned nSel = 0;
 	u32 nPrev = ~0u;
-	unsigned nOldFilter = m_nFilter, nOldDelay = m_nFrameDelay, nOldAspect = m_nAspect;
+	unsigned nOldFilter = m_nFilter, nOldAspect = m_nAspect;
 	const char *pMsg = "";
 	unsigned nFrame = 0;
 
@@ -1292,14 +1355,6 @@ void CKernel::RunSystemMenu (void)
 				ApplyVideoMode ();
 				break;
 
-			case SmDelay:
-				// off -> auto -> 4 ms -> 8 ms -> off
-				if (m_nFrameDelay == 0)		m_nFrameDelay = nDir > 0 ? 1 : 8000;
-				else if (m_nFrameDelay == 1)	m_nFrameDelay = nDir > 0 ? 4000 : 0;
-				else if (m_nFrameDelay <= 4000)	m_nFrameDelay = nDir > 0 ? 8000 : 1;
-				else				m_nFrameDelay = nDir > 0 ? 0 : 4000;
-				break;
-
 			case SmControls:
 				if (nNew & BTN_1)
 				{
@@ -1331,7 +1386,7 @@ void CKernel::RunSystemMenu (void)
 			break;
 		}
 
-		static const char *Labels[SmCount] = {"PICTURE", "SCANLINES", "FRAME DELAY", "CONTROLS", "POWER OFF"};
+		static const char *Labels[SmCount] = {"PICTURE", "SCANLINES", "CONTROLS", "POWER OFF"};
 		TMenuItem Items[SmCount];
 		for (unsigned i = 0; i < SmCount; i++)
 		{
@@ -1343,11 +1398,6 @@ void CKernel::RunSystemMenu (void)
 		static const char *AspectLabels[ASPECT_COUNT] = {"4:3", "4:3 SHARP", "PIXEL"};
 		Items[SmAspect].pValue = AspectLabels[m_nAspect < ASPECT_COUNT ? m_nAspect : 0];
 		Items[SmFilter].pValue = FilterLabels[m_nFilter];
-		char Delay[12];
-		if (m_nFrameDelay == 0)		strcpy (Delay, "OFF");
-		else if (m_nFrameDelay == 1)	strcpy (Delay, "AUTO");
-		else				snprintf (Delay, sizeof Delay, "%u MS", m_nFrameDelay / 1000);
-		Items[SmDelay].pValue = Delay;
 
 		static const TButtonHint Hints[2] = {{'1', "CHANGE"}, {'2', "BACK"}};
 		m_pUI->DrawPanelMenu (m_nLoaded >= 0, "OPTIONS", Items, SmCount, nSel, pMsg, UI_VALUE,
@@ -1355,12 +1405,12 @@ void CKernel::RunSystemMenu (void)
 		ShowUIFrame ();
 	}
 
-	if (m_nFilter != nOldFilter || m_nAspect != nOldAspect || m_nFrameDelay != nOldDelay)
+	if (m_nFilter != nOldFilter || m_nAspect != nOldAspect)
 	{
 		SaveConfig ();
 		char Line[120];
-		snprintf (Line, sizeof Line, "New settings: aspect %s, filter %s, frame delay %u",
-			  AspectName (m_nAspect), FilterName (m_nFilter), m_nFrameDelay);
+		snprintf (Line, sizeof Line, "New settings: aspect %s, filter %s",
+			  AspectName (m_nAspect), FilterName (m_nFilter));
 		Log (Line, COLOR_TEXT);
 	}
 }
@@ -1653,8 +1703,9 @@ unsigned CKernel::RunList (unsigned nSel)
 void CKernel::ResetGameStats (void)
 {
 	s_nWindowStart = CTimer::GetClockTicks ();
-	s_HistEmu.Reset (); s_HistWork.Reset (); s_HistPeriod.Reset ();
-	s_HistLag.Reset (); s_HistSlack.Reset ();
+	s_HistEmu.Reset (); s_HistRender.Reset (); s_HistWork.Reset (); s_HistDraw.Reset ();
+	s_HistPeriod.Reset (); s_HistLag.Reset (); s_HistSlack.Reset ();
+	s_HistMargin.Reset (); s_HistPost.Reset ();
 	s_nOverBudget = s_nMissedVSync = s_nWindowFrames = 0;
 }
 
@@ -1725,16 +1776,15 @@ void CKernel::RunGame (void)
 	unsigned nFrames = 0;
 	unsigned nWinStart = CTimer::GetClockTicks ();
 	unsigned nWorkMax = 0;
+	unsigned nPostMax = 0;			// worst "controls read -> frame over" of the second
 	unsigned nLastVSync = CTimer::GetClockTicks ();
 	unsigned nNextDeadline = nLastVSync + FRAME_US;
 	unsigned nTotalFrames = 0;
 
-	// frame delay: the frame is emulated this long after vsync, so that the
-	// inputs are read as late as possible; auto = from the slowest frame of
-	// the last two seconds, with a margin (nothing during the first second)
-	unsigned nDelayUs = m_nFrameDelay > 1 ? m_nFrameDelay : 0;
-	unsigned nWorkMaxPrev = 0;
-	s_nFrameDelayNow = nDelayUs;
+	// the controls go in at the core's vblank (CoreVBlank), as late before
+	// the vsync as the margin allows: start cautious, then from what is measured
+	s_nInputMargin = m_nInputMarginMin > 2000 ? m_nInputMarginMin : 2000;
+	s_nLastVSync = nLastVSync;
 	for (unsigned p = 0; p < CORE_MAX_PLAYERS; p++)
 	{
 		s_LateIgnore[p] = TRUE;
@@ -1747,24 +1797,51 @@ void CKernel::RunGame (void)
 		unsigned nOld;
 		m_pInput->TakeChange (&nOld);	// a press from the list does not count
 	}
+	m_Audio.Prime ();			// no gap in the sound while the queue fills
 	{
 		unsigned a, b, c;
 		int d;
 		m_Audio.GetStats (&a, &b, &c, &d);	// reset audio statistics
 	}
 
+	// black bands: status line at the bottom, messages at the top (only while
+	// playing); drawn into the back buffer before the frame, outside the picture
+	auto DrawBands = [&] (void)
+	{
+		if (m_bStatusOn && !bMenu && bStatusReady)
+		{
+			const CVideoOut::TTextSpan Spans[] =
+			{
+				{StFps, nFpsColor}, {"   LOAD ", UI_GREY}, {StLoad, nLoadColor},
+				{"   ", UI_GREY}, {StTemp, nTempColor},
+				{"   ", UI_GREY}, {StRes, UI_WHITE}, {StScale, UI_GREY}
+			};
+			m_Video.DrawBandText (FALSE, Spans, sizeof Spans / sizeof Spans[0]);
+			m_nClearStatus = 2;
+		}
+		else if (m_nClearStatus)
+		{
+			m_Video.DrawBandText (FALSE, 0, 0);
+			m_nClearStatus--;
+		}
+		if (nToast && !bMenu)
+		{
+			const CVideoOut::TTextSpan Span = {Toast, UI_WHITE};
+			m_Video.DrawBandText (TRUE, &Span, 1);
+			nToast--;
+			nClearToast = 2;
+		}
+		else if (nClearToast)
+		{
+			m_Video.DrawBandText (TRUE, 0, 0);
+			nClearToast--;
+		}
+	};
+
 	while (1)
 	{
-		if (nDelayUs && !bMenu)
-		{
-			// wait after the vsync before reading the controls
-			unsigned nTarget = nLastVSync + nDelayUs;
-			while ((int) (CTimer::GetClockTicks () - nTarget) < 0)
-			{
-			}
-		}
 		unsigned t0 = CTimer::GetClockTicks ();
-		unsigned t1 = t0;
+		s_bPresented = FALSE;
 
 		if (nTotalFrames % 30 == 0)
 		{
@@ -1783,7 +1860,7 @@ void CKernel::RunGame (void)
 		}
 
 		// the controls now (menus, combinations); the game itself gets them
-		// again at its vblank (LateInputs), where the lag is measured from
+		// again at its vblank (CoreVBlank), where the lag is measured from
 		u32 Pad[CORE_MAX_PLAYERS];
 		for (unsigned p = 0; p < CORE_MAX_PLAYERS; p++)
 		{
@@ -1902,12 +1979,8 @@ void CKernel::RunGame (void)
 						  pFile);
 					nToast = 60;
 				}
-				core_frame ();
-				t1 = CTimer::GetClockTicks ();
-				const int16_t *pAudio;
-				unsigned nAudio = core_audio (&pAudio);
-				m_Audio.WriteFrame (pAudio, nAudio);
-				m_Video.DrawGame (core_video (), core_flipped ());
+				DrawBands ();
+				core_frame ();		// -> CoreVBlank: sound, picture, flip, wait, controls
 
 				if (core_fatal ())
 				{
@@ -2003,40 +2076,10 @@ void CKernel::RunGame (void)
 			{
 				m_Video.DrawGame (core_video (), core_flipped ());
 			}
+			DrawBands ();
+			m_Video.Flip ();
 		}
-
-		// black bands: status line at the bottom, messages at the top (only while playing)
-		if (m_bStatusOn && !bMenu && bStatusReady)
-		{
-			const CVideoOut::TTextSpan Spans[] =
-			{
-				{StFps, nFpsColor}, {"   LOAD ", UI_GREY}, {StLoad, nLoadColor},
-				{"   ", UI_GREY}, {StTemp, nTempColor},
-				{"   ", UI_GREY}, {StRes, UI_WHITE}, {StScale, UI_GREY}
-			};
-			m_Video.DrawBandText (FALSE, Spans, sizeof Spans / sizeof Spans[0]);
-			m_nClearStatus = 2;
-		}
-		else if (m_nClearStatus)
-		{
-			m_Video.DrawBandText (FALSE, 0, 0);
-			m_nClearStatus--;
-		}
-		if (nToast && !bMenu)
-		{
-			const CVideoOut::TTextSpan Span = {Toast, UI_WHITE};
-			m_Video.DrawBandText (TRUE, &Span, 1);
-			nToast--;
-			nClearToast = 2;
-		}
-		else if (nClearToast)
-		{
-			m_Video.DrawBandText (TRUE, 0, 0);
-			nClearToast--;
-		}
-		unsigned t2 = CTimer::GetClockTicks ();
-		m_Video.Flip ();
-		unsigned t3 = CTimer::GetClockTicks ();
+		unsigned tRet = CTimer::GetClockTicks ();
 
 		if (m_bVSync)
 		{
@@ -2052,21 +2095,28 @@ void CKernel::RunGame (void)
 		unsigned t4 = CTimer::GetClockTicks ();
 		unsigned nPeriod = t4 - nLastVSync;
 		nLastVSync = t4;
+		s_nLastVSync = t4;
 		nTotalFrames++;
 
-		if (!bMenu)
+		if (s_bPresented)
 		{
-			s_HistEmu.Add (t1 - t0);
-			s_HistWork.Add (t2 - t0);
+			unsigned nPost = tRet - s_tSample;		// handler lines + return, after the controls
+			s_HistEmu.Add (s_tEmuEnd - t0);
+			s_HistRender.Add (core_render_us ());
+			s_HistWork.Add (s_tFlip - t0);
+			s_HistDraw.Add (s_tFlip - s_tEmuEnd);
 			s_HistPeriod.Add (nPeriod);
-			s_HistSlack.Add (t4 - t3);
+			s_HistSlack.Add (t4 - s_tFlip);
+			s_HistMargin.Add (t4 - s_tSample);
+			s_HistPost.Add (nPost);
+			if (nPost > nPostMax) nPostMax = nPost;
 			if (s_bLateChange)
 			{
-				// pad report -> start of scan-out of the frame whose vblank sample used it
-				s_HistLag.Add (t4 - s_nLateChangeTicks);
+				// pad report -> the vblank sample that took it in
+				s_HistLag.Add (s_tSample - s_nLateChangeTicks);
 				s_bLateChange = FALSE;
 			}
-			if (t3 - t0 > 16000) s_nOverBudget++;
+			if (s_tFlip - t0 > 16000) s_nOverBudget++;
 			if (nPeriod > 25000) s_nMissedVSync++;
 			s_nWindowFrames++;
 			if (s_nWindowFrames >= REPORT_FRAMES)
@@ -2074,13 +2124,14 @@ void CKernel::RunGame (void)
 				ReportWindow (FALSE);
 				m_pInput->FlushDiagnostics ();
 			}
+			// status line: the worst frame of the second
+			if (s_tFlip - t0 > nWorkMax)
+			{
+				nWorkMax = s_tFlip - t0;
+			}
 		}
 
 		// status line, once per second
-		if (!bMenu && t2 - t0 > nWorkMax)
-		{
-			nWorkMax = t2 - t0;
-		}
 		if (++nFrames == 60)
 		{
 			unsigned nElapsed = t4 - nWinStart;
@@ -2108,16 +2159,14 @@ void CKernel::RunGame (void)
 				  k == S ? "HVS" : (k == 1 ? "CPU" : "CPU+HVS"));
 			bStatusReady = TRUE;
 
-			if (m_nFrameDelay == 1)
-			{
-				// slowest frame of the last two seconds + 25% + 2.5 ms must still fit
-				unsigned nWorst = nWorkMax > nWorkMaxPrev ? nWorkMax : nWorkMaxPrev;
-				unsigned nBudget = nWorst + nWorst / 4 + 2500;
-				nDelayUs = nBudget + 1000 < FRAME_US ? FRAME_US - nBudget : 0;
-				if (nDelayUs > 12000) nDelayUs = 12000;
-				nWorkMaxPrev = nWorkMax;
-				s_nFrameDelayNow = nDelayUs;
-			}
+			// the controls as late as possible: twice the worst "after the
+			// controls" time of the second plus half a millisecond covers the
+			// handler's lines and the vsync's own jitter; never under the minimum
+			unsigned nMargin = nPostMax * 2 + 500;
+			if (nMargin < m_nInputMarginMin) nMargin = m_nInputMarginMin;
+			if (nMargin > 5000) nMargin = 5000;
+			s_nInputMargin = nMargin;
+			nPostMax = 0;
 
 			m_CPUThrottle.Update ();
 			m_ActLED.On ();
@@ -2173,6 +2222,20 @@ TShutdownMode CKernel::Run (void)
 	f_mkdir (SHOT_DIR);
 	LoadConfig ();
 
+	// the picture is written to the framebuffer by all four cores
+	if (!m_bMultiCore)
+	{
+		Log ("Drawing: core 0 alone (multicore=off)", COLOR_TEXT);
+	}
+	else if (m_Video.StartDrawCores ())
+	{
+		Log ("Drawing: the picture is written by all four cores", COLOR_TEXT);
+	}
+	else
+	{
+		Log ("Drawing: cores 1-3 did not start, core 0 draws alone", COLOR_ERR);
+	}
+
 	m_pUI = new CUI;
 
 	// games
@@ -2209,7 +2272,7 @@ TShutdownMode CKernel::Run (void)
 		Fatal (CPSPI_ERR_CORE, "the emulator core did not initialise");
 	}
 	s_pLateInput = m_pInput;
-	core_set_input_callback (LateInputs);
+	core_set_input_callback (CoreVBlankHook);
 
 	// last played game
 	unsigned nSel = 0;

@@ -7,11 +7,136 @@
 #include <circle/font.h>
 #include <circle/util.h>
 #include <circle/synchronize.h>
+#include <circle/multicore.h>
+#include <circle/memory.h>
+#include <circle/timer.h>
 
 #define PROPTAG_RELEASE_BUFFER	0x00048001
 #define PROPTAG_GET_PIXEL_ORDER	0x00040006	// 0 = BGR, 1 = RGB
 
 #define MAX_LINE	(GAME_W * 8)		// longest scaled line we support
+
+// ---- drawing on all four cores ---------------------------------------------
+// Writing the picture into the framebuffer (non-cacheable memory) is bound by
+// each core's write path, about 4.5 ms for the 4:3 picture on a Pi 3; four
+// cores writing their own quarter take about a third of that. The job (source
+// picture, flip) is published by bumping a generation counter and signalled
+// with SEV; cores 1-3 wait in WFE in between and report with their own
+// counters. The source picture and the tables are normal cacheable memory,
+// which the cores keep coherent among themselves; the framebuffer needs no
+// cache maintenance, only a barrier before the report.
+
+#define DRAW_CORES	4
+#define LINES_PER_CORE	(GAME_H / DRAW_CORES)
+
+// per-core scratch: one scaled line, the same darkened, the converted source line
+static u32 s_Line[DRAW_CORES][MAX_LINE];
+static u32 s_Dark[DRAW_CORES][MAX_LINE];
+static u32 s_Conv[DRAW_CORES][GAME_W + 1];
+
+class CDrawCores : public CMultiCoreSupport
+{
+public:
+	CDrawCores (CVideoOut *pVideo)
+	:	CMultiCoreSupport (CMemorySystem::Get ()),
+		m_pVideo (pVideo),
+		m_nJob (0),
+		m_pSource (0),
+		m_bFlip (FALSE),
+		m_bBroken (FALSE)
+	{
+		for (unsigned c = 0; c < DRAW_CORES; c++)
+		{
+			m_nDone[c] = 0;
+			m_bAlive[c] = FALSE;
+		}
+	}
+
+	// starts cores 1-3 and waits until they are in their loop
+	boolean Start (void)
+	{
+		if (!Initialize ())
+		{
+			return FALSE;
+		}
+		unsigned nWait = CTimer::GetClockTicks ();
+		while (CTimer::GetClockTicks () - nWait < 500000)
+		{
+			if (m_bAlive[1] && m_bAlive[2] && m_bAlive[3])
+			{
+				return TRUE;
+			}
+		}
+		return FALSE;
+	}
+
+	boolean IsWorking (void) const	{ return !m_bBroken; }
+
+	// the whole picture: core 0 takes the first share and waits for the others
+	void Draw (const u16 *pSource, boolean bFlip)
+	{
+		m_pSource = pSource;
+		m_bFlip = bFlip;
+		DataMemBarrier ();
+		unsigned nJob = ++m_nJob;
+		DataSyncBarrier ();
+		asm volatile ("sev");
+
+		m_pVideo->DrawGameLines (pSource, 0, LINES_PER_CORE, s_Line[0], s_Dark[0], s_Conv[0], bFlip);
+
+		unsigned nStart = CTimer::GetClockTicks ();
+		for (unsigned c = 1; c < DRAW_CORES; c++)
+		{
+			while (m_nDone[c] != nJob)
+			{
+				if (CTimer::GetClockTicks () - nStart > 50000)
+				{
+					// a core did not answer: its share here, and core 0 alone from now on
+					m_pVideo->DrawGameLines (pSource, c * LINES_PER_CORE, (c + 1) * LINES_PER_CORE,
+								 s_Line[0], s_Dark[0], s_Conv[0], bFlip);
+					m_bBroken = TRUE;
+					break;
+				}
+			}
+		}
+		DataMemBarrier ();
+	}
+
+	void Run (unsigned nCore) override
+	{
+		if (nCore == 0 || nCore >= DRAW_CORES)
+		{
+			return;
+		}
+		m_bAlive[nCore] = TRUE;
+		DataSyncBarrier ();
+		unsigned nSeen = 0;
+		while (1)
+		{
+			while (m_nJob == nSeen)
+			{
+				asm volatile ("wfe" ::: "memory");
+			}
+			nSeen = m_nJob;
+			DataMemBarrier ();
+			m_pVideo->DrawGameLines (m_pSource, nCore * LINES_PER_CORE, (nCore + 1) * LINES_PER_CORE,
+						 s_Line[nCore], s_Dark[nCore], s_Conv[nCore], m_bFlip);
+			DataSyncBarrier ();		// every store to the framebuffer done
+			m_nDone[nCore] = nSeen;
+			DataSyncBarrier ();
+			asm volatile ("sev");
+		}
+	}
+
+private:
+	CVideoOut *m_pVideo;
+	volatile unsigned m_nJob;
+	volatile unsigned m_nDone[DRAW_CORES];
+	volatile boolean m_bAlive[DRAW_CORES];
+	const u16 *volatile m_pSource;
+	volatile boolean m_bFlip;
+	volatile boolean m_bBroken;
+};
 
 CVideoOut::CVideoOut (void)
 :	m_pFrameBuffer (0),
@@ -36,26 +161,46 @@ CVideoOut::CVideoOut (void)
 	m_nStatusY (0),
 	m_nStatusScale (1),
 	m_nTopY (0),
-	m_pLine (0),
-	m_pDark (0),
 	m_pLUT (0),
 	m_pColMap (0),
 	m_pColWeight (0),
-	m_pSrcLine (0),
 	m_nPixelOrder (1),
-	m_bRLow (TRUE)
+	m_bRLow (TRUE),
+	m_pDrawCores (0)
 {
 }
 
 CVideoOut::~CVideoOut (void)
 {
 	delete m_pFrameBuffer;
-	delete [] m_pLine;
-	delete [] m_pDark;
 	delete [] m_pLUT;
 	delete [] m_pColMap;
 	delete [] m_pColWeight;
-	delete [] m_pSrcLine;
+}
+
+boolean CVideoOut::StartDrawCores (void)
+{
+	if (m_pDrawCores != 0)
+	{
+		return m_pDrawCores->IsWorking ();
+	}
+	CDrawCores *pCores = new CDrawCores (this);
+	if (pCores == 0)
+	{
+		return FALSE;
+	}
+	if (!pCores->Start ())
+	{
+		// the cores that did start, if any, sleep in WFE for good
+		return FALSE;
+	}
+	m_pDrawCores = pCores;
+	return TRUE;
+}
+
+unsigned CVideoOut::GetDrawCores (void) const
+{
+	return m_pDrawCores != 0 && m_pDrawCores->IsWorking () ? DRAW_CORES : 1;
 }
 
 // BGR555 (R in bits 0-4, G 5-9, B 10-14) -> framebuffer pixel
@@ -135,14 +280,10 @@ boolean CVideoOut::Initialize (void)
 		m_nDispH = 480;
 	}
 
-	m_pLine = new u32[MAX_LINE];
-	m_pDark = new u32[MAX_LINE];
 	m_pLUT = new u32[32768];
 	m_pColMap = new u16[MAX_LINE];
 	m_pColWeight = new u8[MAX_LINE];
-	m_pSrcLine = new u32[GAME_W + 1];
-	if (m_pLine == 0 || m_pDark == 0 || m_pLUT == 0 || m_pColMap == 0 || m_pColWeight == 0
-	    || m_pSrcLine == 0)
+	if (m_pLUT == 0 || m_pColMap == 0 || m_pColWeight == 0)
 	{
 		return FALSE;
 	}
@@ -349,13 +490,27 @@ void CVideoOut::DrawText (unsigned nBuffer, unsigned nCol, unsigned nRow, const 
 
 void CVideoOut::DrawGame (const u16 *pSource, boolean bFlip)
 {
-	for (unsigned y = 0; y < GAME_H; y++)
+	if (m_pDrawCores != 0 && m_pDrawCores->IsWorking ())
 	{
-		DrawGameLine (pSource, y, m_pLine, m_pDark, bFlip);
+		m_pDrawCores->Draw (pSource, bFlip);
+	}
+	else
+	{
+		DrawGameLines (pSource, 0, GAME_H, s_Line[0], s_Dark[0], s_Conv[0], bFlip);
 	}
 }
 
-void CVideoOut::DrawGameLine (const u16 *pSource, unsigned y, u32 *pLine, u32 *pDark, boolean bFlip)
+void CVideoOut::DrawGameLines (const u16 *pSource, unsigned nFirst, unsigned nEnd,
+			       u32 *pLine, u32 *pDark, u32 *pConv, boolean bFlip)
+{
+	for (unsigned y = nFirst; y < nEnd; y++)
+	{
+		DrawGameLine (pSource, y, pLine, pDark, pConv, bFlip);
+	}
+}
+
+void CVideoOut::DrawGameLine (const u16 *pSource, unsigned y, u32 *pLine, u32 *pDark, u32 *pConv,
+			      boolean bFlip)
 {
 	const unsigned M = m_nM, MX = m_nMX;
 	const unsigned nGameW = MX ? GAME_W * MX : m_nScreenW / m_nK;
@@ -376,7 +531,6 @@ void CVideoOut::DrawGameLine (const u16 *pSource, unsigned y, u32 *pLine, u32 *p
 		// framebuffer column is a blend of source columns i and i + 1 with
 		// weight w / 256 (w = 0 reproduces column i exactly: no branch); the
 		// two 16 bit lanes trick blends the four bytes with two multiplies
-		u32 *pConv = m_pSrcLine;
 		if (bFlip)
 		{
 			for (unsigned x = 0; x < GAME_W; x++)

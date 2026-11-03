@@ -1,18 +1,26 @@
 /*
  * neo-pi - HDMI audio output
  *
- * About 800 stereo frames at 48 kHz arrive per emulated frame (from the
- * resampler in kernel.cpp). The display and the HDMI audio clock are not exactly locked, so
- * the queue level is kept around TARGET by stretching or shrinking each block
- * by a few samples (linear interpolation, inaudible).
+ * About 805 stereo frames at 48 kHz arrive per emulated frame (from the
+ * resampler in njemu_pi.c). The display and the HDMI audio clock are not
+ * exactly locked, so the queue level is kept around TARGET by stretching or
+ * shrinking each block by a few samples (linear interpolation, inaudible).
+ *
+ * Latency: the DMA takes CHUNK_SIZE / 2 frames at a time, so the queue must
+ * never hold less than that when a chunk is fetched; one frame of sound
+ * (805) arrives at a time and is consumed over the frame, so the level
+ * swings by that much. TARGET = chunk + frame + a little; with 4 ms chunks
+ * that is ~25 ms of queue plus the chunk in flight: about 28 ms from the
+ * chip to the HDMI output (it was ~49 ms with 16 ms chunks).
  */
 #include "audio.h"
+#include <circle/util.h>
 
 #define SAMPLE_RATE	48000
-#define CHUNK_SIZE	(384 * 4)		// words per DMA chunk (must be multiple of 384)
+#define CHUNK_SIZE	(384 * 1)		// words per DMA chunk (multiple of 384): 192 frames, 4 ms
 #define QUEUE_FRAMES	4800			// 100 ms queue capacity
-#define TARGET_FRAMES	1600			// keep ~2 video frames queued (~33 ms)
-#define BAND_FRAMES	400
+#define TARGET_FRAMES	1200			// ~25 ms queued
+#define BAND_FRAMES	350
 
 CAudioOut::CAudioOut (void)
 :	m_pSound (0),
@@ -47,6 +55,27 @@ boolean CAudioOut::Initialize (CInterruptSystem *pInterrupt)
 	}
 	m_bOK = TRUE;
 	return TRUE;
+}
+
+void CAudioOut::Prime (void)
+{
+	if (!m_bOK)
+	{
+		return;
+	}
+	unsigned nQueued = m_pSound->GetQueueFramesAvail ();
+	if (nQueued >= TARGET_FRAMES)
+	{
+		return;
+	}
+	memset (m_Buffer, 0, sizeof m_Buffer);
+	unsigned nLeft = TARGET_FRAMES - nQueued;
+	while (nLeft > 0)
+	{
+		unsigned n = nLeft < 2048 ? nLeft : 2048;
+		m_pSound->Write (m_Buffer, n * 4);
+		nLeft -= n;
+	}
 }
 
 void CAudioOut::WriteFrame (const s16 *pSamples, unsigned nFrames)

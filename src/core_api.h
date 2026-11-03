@@ -61,9 +61,14 @@ int core_vertical (void);		/* vertical (rotated) game */
 /* interleaved stereo at CORE_AUDIO_RATE produced by the last frame */
 unsigned core_audio (const int16_t **samples);
 void core_set_input (unsigned player, uint32_t flags);
-/* called by the core at its vblank, right before the game reads the ports:
-   the kernel samples the pads then and calls core_set_input */
+/* called by the core at its vblank, inside core_frame: the picture and the
+   sound of the frame are complete (core_video / core_audio) and the game
+   has not yet read its input ports; the kernel shows the picture, waits for
+   the right moment, samples the pads and calls core_set_input; only the
+   interrupt handler's few lines remain before core_frame returns */
 void core_set_input_callback (void (*callback) (void));
+/* microseconds the core spent rendering the picture of the last frame */
+unsigned core_render_us (void);
 unsigned core_players (void);
 unsigned core_buttons (void);
 int core_fatal (void);

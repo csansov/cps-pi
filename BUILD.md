@@ -1,4 +1,4 @@
-# cps-pi - how to build (version 0.4.0)
+# cps-pi - how to build (version 0.5.0)
 
 Build host: Windows (Git Bash) or Linux. Everything lives in this directory;
 nothing is installed system wide.
@@ -38,8 +38,8 @@ nothing is installed system wide.
 3. **NJEMU** cloned into `third_party/njemu-libretro`
    (https://github.com/HonkeyKong/NJEMU-Libretro), unmodified. `build.sh`
    copies its `src` tree into the build directory, replaces
-   `libretro/platform.h` with `src/libretro/platform.h` and applies two
-   small patches to the copy: `patches/njemu-vblank-input.py` (the controls
+   `libretro/platform.h` and `libretro/lifecycle.inc` with the files in
+   `src/libretro/` and applies two small patches to the copy: `patches/njemu-vblank-input.py` (the controls
    are sampled at the emulated vblank) and `patches/njemu-cps1-timing.py`
    (the real 59.637 Hz frame, the 68000 at 12 MHz where the board had it);
    the core is compiled

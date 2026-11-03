@@ -89,12 +89,21 @@ public:
 		       u32 nFG, u32 nBG);
 	void ClearRows (unsigned nBuffer, unsigned nFirstRow, unsigned nRows, u32 nColor);
 
-	// Game: draws the visible 384x224 area into the back buffer
-	// (bFlip: the picture upside down, as the cocktail flip of the hardware)
+	// Game: draws the visible 384x224 area into the back buffer, on every
+	// core StartDrawCores() brought up (bFlip: the picture upside down, as
+	// the cocktail flip of the hardware)
 	void DrawGame (const u16 *pSource, boolean bFlip = FALSE);
-	// one line of the game picture into the back buffer, with the caller's
-	// scratch lines (GAME_W * 8 pixels each)
-	void DrawGameLine (const u16 *pSource, unsigned y, u32 *pLine, u32 *pDark, boolean bFlip = FALSE);
+	// lines [nFirst, nEnd) of the game picture into the back buffer, with the
+	// caller's scratch lines (GAME_W * 8 pixels each) and converted source
+	// line (GAME_W + 1 pixels)
+	void DrawGameLines (const u16 *pSource, unsigned nFirst, unsigned nEnd,
+			    u32 *pLine, u32 *pDark, u32 *pConv, boolean bFlip);
+	void DrawGameLine (const u16 *pSource, unsigned y, u32 *pLine, u32 *pDark, u32 *pConv,
+			   boolean bFlip);
+	// Cores 1-3 draw their share of every picture from now on; FALSE = they
+	// did not start, core 0 draws alone
+	boolean StartDrawCores (void);
+	unsigned GetDrawCores (void) const;	// 1 or 4
 	// One centred line of text in the top or bottom black band (no spans = clear)
 	struct TTextSpan { const char *pText; u32 nColor; };	// colour: 0xRRGGBB
 	void DrawBandText (boolean bTop, const TTextSpan *pSpans, unsigned nSpans);
@@ -147,14 +156,12 @@ private:
 		return m_bRLow ? c : (c & 0xFF00FF00u) | ((c >> 16) & 0xFFu) | ((c & 0xFFu) << 16);
 	}
 
-	u32	*m_pLine;			// one scaled game line (cached memory)
-	u32	*m_pDark;			// the same line darkened (scanlines)
 	u32	*m_pLUT;			// BGR555 -> framebuffer pixel (32768 entries)
 	u16	*m_pColMap;			// 4:3: source column of each framebuffer picture column
 	u8	*m_pColWeight;			// 4:3: weight (0-255) of the next source column (blend)
-	u32	*m_pSrcLine;			// 4:3: one source line converted (cached), GAME_W + 1
 	unsigned m_nPixelOrder;			// reported by the firmware
 	boolean	 m_bRLow;			// red in the low byte of a pixel
+	class CDrawCores *m_pDrawCores;		// cores 1-3 drawing (0: core 0 alone)
 };
 
 #endif

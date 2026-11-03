@@ -27,9 +27,11 @@ for P in $TARGETS; do
 	# our sources, flat
 	cp "$ROOT"/src/*.c "$ROOT"/src/*.cpp "$B"/
 	cp "$ROOT"/third_party/miniz/miniz.c "$B"/
-	# the core: a private copy, with our platform header in place of the libretro one
+	# the core: a private copy, with our platform header and frame lifecycle in
+	# place of the libretro port's (the sound is produced at the vblank)
 	cp -r "$NJSRC" "$B/njemu"
 	cp "$ROOT/src/libretro/platform.h" "$B/njemu/libretro/platform.h"
+	cp "$ROOT/src/libretro/lifecycle.inc" "$B/njemu/libretro/lifecycle.inc"
 	# controls sampled at the emulated vblank, when the game reads them
 	python "$ROOT/patches/njemu-vblank-input.py" "$B/njemu/cps1/driver.c"
 	# the real frame period (59.637 Hz) and the 68000 at 12 MHz where the board had it

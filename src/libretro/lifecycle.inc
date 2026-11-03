@@ -76,6 +76,8 @@ void lr_machine_frame(void)
         video_enable_w(1); fix_disable_w(0); spr_disable_w(0);
     }
 #endif
-    lr_audio_frame();
+    /* cps-pi: the frame's sound is produced at the vblank (lr_vblank_input),
+       with the picture, so that only the interrupt handler's few lines run
+       between the controls being read and the end of the frame */
 }
 #endif

@@ -313,6 +313,7 @@ static void blit(void *data, uint8_t index, void *palette, uint8_t bank, uint32_
 	if (indexed && !clut) return; /* every texel would be transparent */
 	const uint8_t *tex8 = v->texture[index];
 	const uint16_t *tex16 = (const uint16_t *)v->texture[index];
+	const int tw = (int)info.width, th = (int)info.height;
 	for (unsigned i = 0; i + 1 < count; i += 2) {
 		struct Vertex a = vs[i], b = vs[i+1];
 		int w = b.x - a.x, h = b.y - a.y;
@@ -321,12 +322,67 @@ static void blit(void *data, uint8_t index, void *palette, uint8_t bank, uint32_
 		int t = a.y > v->top ? a.y : v->top;
 		int r = b.x < v->right ? b.x : v->right;
 		int bot = b.y < v->bottom ? b.y : v->bottom;
-		if (l >= r) continue;
+		if (l >= r || t >= bot) continue;
+		uint16_t z = (uint16_t)a.z;
+
+		/* Fast path: the quad is drawn 1:1 (every CPS1 tile and object is;
+		 * mirrored ones have reversed texels), so texel() reduces to
+		 * t0 + (p - p0), or t0 - 1 - (p - p0) when mirrored: no per-pixel
+		 * column table, no divisions, the texel pointer just steps */
+		int du = (int)b.u - (int)a.u, dv = (int)b.v - (int)a.v;
+		if ((du == w || du == -w) && (dv == h || dv == -h)) {
+			const int ustep = du > 0 ? 1 : -1, vstep = dv > 0 ? 1 : -1;
+			const int u0 = du > 0 ? (int)a.u + (l - a.x) : (int)a.u - 1 - (l - a.x);
+			const int v0 = dv > 0 ? (int)a.v + (t - a.y) : (int)a.v - 1 - (t - a.y);
+			const int u1 = u0 + ustep * (r - l - 1), v1 = v0 + vstep * (bot - t - 1);
+			if (u0 >= 0 && u0 < tw && u1 >= 0 && u1 < tw && v0 >= 0 && v0 < th && v1 >= 0 && v1 < th) {
+				const int n = r - l;
+				int tv = v0;
+				for (int y = t; y < bot; ++y, tv += vstep) {
+					const size_t row = (size_t)tv * (size_t)tw;
+					uint16_t *dst = v->work + y * BUF_WIDTH + l, *dep = v->depth + y * BUF_WIDTH + l;
+					if (indexed) {
+						const uint8_t *src = tex8 + row + u0;
+						if (v->depth_test) {
+							for (int x = 0; x < n; ++x, src += ustep) {
+								uint16_t c = clut[*src];
+								if (c & 0x8000) continue;
+								if (z < dep[x]) continue;
+								dep[x] = z;
+								dst[x] = c;
+							}
+						} else {
+							for (int x = 0; x < n; ++x, src += ustep) {
+								uint16_t c = clut[*src];
+								if (!(c & 0x8000)) dst[x] = c;
+							}
+						}
+					} else {
+						const uint16_t *src = tex16 + row + u0;
+						if (v->depth_test) {
+							for (int x = 0; x < n; ++x, src += ustep) {
+								uint16_t c = *src;
+								if (c & 0x8000) continue;
+								if (z < dep[x]) continue;
+								dep[x] = z;
+								dst[x] = c;
+							}
+						} else {
+							for (int x = 0; x < n; ++x, src += ustep) {
+								uint16_t c = *src;
+								if (!(c & 0x8000)) dst[x] = c;
+							}
+						}
+					}
+				}
+				continue;
+			}
+		}
+
 		for (int x = l; x < r; ++x) {
 			int u = texel(x, a.x, w, a.u, b.u);
 			ucol[x - l] = (u < 0 || (size_t)u >= info.width) ? -1 : u;
 		}
-		uint16_t z = (uint16_t)a.z;
 		for (int y = t; y < bot; ++y) {
 			int tv = texel(y, a.y, h, a.v, b.v);
 			if (tv < 0 || (size_t)tv >= info.height) continue;
@@ -445,16 +501,26 @@ void lr_input_flags(uint8_t *f, unsigned player)
 	for (unsigned i = 0; i < 16; i++) f[i] = (v >> i) & 1;
 }
 
-/* At the emulated vblank (patches/njemu-vblank-input.py), right before the
-   interrupt whose handler reads the input ports: the kernel samples the pads
-   now and the ports are latched again, so the game sees controls that are a
-   frame fresher than those latched at the start of the frame. */
+/* At the emulated vblank (patches/njemu-vblank-input.py): the picture of the
+   frame has just been rendered and the interrupt whose handler reads the
+   input ports is about to be raised. The frame's sound is produced here too,
+   so that the kernel can show the picture, queue the sound, wait until just
+   before the display's vsync and sample the pads then; the ports are latched
+   again with that sample, a frame fresher than the latch at the start of the
+   frame (and as late as the board reads them). */
 void lr_vblank_input(void)
 {
-	if (!s_input_callback) return;
-	s_input_callback();
+	lr_audio_frame();
+	if (s_input_callback) s_input_callback();
 	update_inputport();
 }
+
+/* time spent rendering the picture (cps1_screenrefresh + blit_finish) */
+static uint64_t s_render_t0;
+static unsigned s_render_us;
+void lr_render_begin(void) { s_render_t0 = cpspi_ticks_us(); }
+void lr_render_end(void) { s_render_us = (unsigned)(cpspi_ticks_us() - s_render_t0); }
+unsigned core_render_us(void) { return s_render_us; }
 
 void core_set_input_callback(void (*callback)(void))
 {

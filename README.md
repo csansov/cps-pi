@@ -13,9 +13,10 @@ maintained by fjtrujy and HonkeyKong). The frontend, the boot sequence, the
 menus, the pad handling and the video and audio paths are neo-pi's, adapted to
 the CPS1 picture and controls.
 
-Status: **0.2.0**. Runs on a Raspberry Pi 3 Model B at a steady 60 fps with
-the CPU less than half busy (Street Fighter II': emulation 2.4 ms per frame,
-worst 4.8 ms). Expect rough edges.
+Status: **0.5.0**. Runs on a Raspberry Pi 3 Model B at the board's 59.64 fps
+with no dropped frames (Street Fighter II' Champion Edition, 68000 at
+12 MHz: emulation 6-8 ms per frame in play, worst 11 ms; the picture is
+written in about 1.5 ms by the four cores). Expect rough edges.
 
 ## Why
 
@@ -42,7 +43,10 @@ polling and HDMI audio. cps-pi brings that approach to the CPS1.
 NJEMU is built in its frontend-driven configuration (the one its libretro
 port uses): one synchronous frame per call, no threads, no GUI, software
 rendering. The core source is not modified; `build.sh` copies it into the
-build directory and drops in cps-pi's own `libretro/platform.h`.
+build directory, drops in cps-pi's own `libretro/platform.h` and
+`libretro/lifecycle.inc` (the frame's sound is produced at the vblank, with
+the picture) and applies the two build-time patches in `patches/` (the
+vblank callback order and the board's timing).
 
 ## Features
 
@@ -61,13 +65,23 @@ build directory and drops in cps-pi's own `libretro/platform.h`.
   12 MHz on the sets MAME lists with that clock (the CPS-Dash family:
   Street Fighter II' and later, the QSound games, Pang! 3 ...), 10 MHz on
   the rest.
-- Low input lag: the pads are sampled at the emulated vblank, the moment the
-  game's interrupt handler reads the input ports (a frame fresher than the
-  usual latch at the start of the frame), and a frame delay runs the
-  emulation as late as possible after vsync (automatic, from the measured
-  frame times).
-- HDMI audio at 48 kHz; the chips run at their native 44.1 kHz (YM2151 + OKI)
-  or 24 kHz (QSound) and are resampled.
+- The board's input timing. The core's vblank callback hands the finished
+  picture and sound of the frame to the kernel *before* raising the
+  interrupt whose handler reads the input ports; the kernel flips the
+  picture, waits until the display's vsync is about a millisecond away,
+  samples the pads at that moment and only then lets the handler run. The
+  game reads controls as fresh as on the board (which reads its ports at
+  its own vblank, 1.4 ms before the next frame), the emulation of the next
+  frame starts right at the vsync, and nothing needs tuning: the slow part
+  of the frame runs first and the wait comes after it, whatever the frame
+  cost. Input to photon is the board's: the frame after the one being
+  scanned, plus the game's own latency.
+- The four cores write the picture to the framebuffer (a quarter each),
+  about 1.5 ms instead of 4.5 on a Pi 3; the core's own sprite renderer has
+  a 1:1 fast path for every tile and object.
+- HDMI audio at 48 kHz, about 28 ms from the chip to the output; the chips
+  run at their native 44.1 kHz (YM2151 + OKI) or 24 kHz (QSound) and are
+  resampled.
 - USB gamepads (six buttons, Start, Select) and keyboard, USB polled every
   1 ms, per-model control set-up saved in `cpspi/pads.cfg`.
 - In-game menu (hold Select for a second, or Esc): reset, service menu (the
@@ -75,16 +89,17 @@ build directory and drops in cps-pi's own `libretro/platform.h`.
   takes a screenshot, Select+2 shows the status line (FPS, load, temperature),
   Select+3 the credits. A short Select press inserts a coin.
 - OPTIONS from the game list (button 4): picture 4:3 or pixel, scanlines,
-  frame delay (auto / off / 4 / 8 ms), controls, power off; saved in
-  `cpspi/cpspi.cfg` (`aspect=`, `filter=`, `framedelay=`, `scaler=cpu`,
-  `usbpoll=native`).
+  controls, power off; saved in `cpspi/cpspi.cfg` (`aspect=`, `filter=`,
+  `scaler=cpu`, `usbpoll=native`; by hand: `inputmargin=1.5` to read the
+  controls earlier before the vsync if the log shows missed vsyncs with
+  normal frame times, `multicore=off` to draw on core 0 alone).
 - EEPROM contents saved in `cpspi/nvram`, diagnostics in `cpspi/LOG.TXT`
-  (frame times, audio queue, input lag per minute), benchmark and sampling
-  profiler with an empty `cpspi/BENCH` file.
+  (per minute: frame, render and draw times, how long before the vsync the
+  controls were read, pad report to game latency, audio queue), benchmark
+  and sampling profiler with an empty `cpspi/BENCH` file.
 
 Not yet: save states, DIP switch editor, vertical games drawn upright (they
-run, but sideways), the multicore and beam-racing refinements of neo-pi,
-Pi 4 kernel.
+run, but sideways), Pi 4 kernel.
 
 ## SD card
 

@@ -51,6 +51,10 @@ public:
 	void Fatal (int nCode, const char *pMessage);
 	void SaveLog (void);
 
+	// called by the core at its vblank (inside core_frame): picture and sound
+	// out, then the controls, as late as the vsync allows
+	void CoreVBlank (void);
+
 	static CKernel *Get (void) { return s_pThis; }
 
 private:
@@ -132,7 +136,8 @@ private:
 	unsigned		 m_nFilter;	// FILTER_*
 	boolean			 m_bHVS;		// FALSE: scaler=cpu in cpspi.cfg
 	unsigned		 m_nAspect;	// ASPECT_* (4:3, 4:3 sharp, square pixels)
-	unsigned		 m_nFrameDelay;	// 0 = off, 1 = auto, else fixed microseconds
+	unsigned		 m_nInputMarginMin;	// controls read at least this long before the vsync (us)
+	boolean			 m_bMultiCore;	// FALSE: multicore=off, core 0 draws alone
 
 	static CKernel		*s_pThis;
 };

@@ -22,8 +22,13 @@ void lr_machine_unload(void);
 void lr_audio_frame(void);
 void lr_audio_reset(void);
 void lr_options(void);
-/* cps-pi: called by the core at the emulated vblank, before the interrupt */
+/* cps-pi: called by the core at the emulated vblank, once the picture of the
+   frame is rendered and before the interrupt (patches/njemu-vblank-input.py):
+   produces the frame's sound, hands both to the kernel and latches the controls */
 void lr_vblank_input(void);
+/* cps-pi: around the rendering of the picture, to time it */
+void lr_render_begin(void);
+void lr_render_end(void);
 /* cps-pi: 68000 clock of the loaded game in Hz (10 or 12 MHz), see patches/njemu-cps1-timing.py */
 double lr_m68k_clock(void);
 extern unsigned lr_width, lr_height;

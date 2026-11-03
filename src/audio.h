@@ -19,6 +19,8 @@ public:
 
 	// Queue one emulated frame of interleaved stereo samples
 	void WriteFrame (const s16 *pSamples, unsigned nFrames);
+	// Silence up to the target level (before a game starts: no start-up gap)
+	void Prime (void);
 
 	// Statistics since the last call
 	void GetStats (unsigned *pMinQueue, unsigned *pMaxQueue, unsigned *pUnderruns,
