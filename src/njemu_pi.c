@@ -120,10 +120,12 @@ void lr_options(void)
 {
 	option_vsync = option_speedlimit = option_autoframeskip = option_frameskip = option_showfps = 0;
 	option_sound_enable = 1; option_samplerate = 2; option_sound_volume = 10;
+#if EMU_SYSTEM == CPS1
 	cps1_dipswitch[0] = s_dips[0] & 255;
 	cps1_dipswitch[1] = s_dips[1] & 255;
 	cps1_dipswitch[2] = s_dips[2] & 255;
-	cps_raster_enable = 1;
+	cps_raster_enable = 1;		/* line scroll (CPS2 has it always on) */
+#endif
 	cps_rotate_screen = 0;
 }
 
@@ -524,7 +526,15 @@ void lr_input_flags(uint8_t *f, unsigned player)
 {
 	memset(f, 0, MAX_INPUTS);
 	uint32_t v = player < CORE_MAX_PLAYERS ? s_input[player] : 0;
+#if EMU_SYSTEM == CPS2
+	/* CPS2 numbers its inputs differently after the start button: the
+	   service coin is 15 and the test switch 16 (P2_START, the dials in between) */
+	for (unsigned i = 0; i < 12; i++) f[i] = (v >> i) & 1;
+	f[SERV_COIN] = (v >> 14) & 1;
+	f[SERV_SWITCH] = (v >> 15) & 1;
+#else
 	for (unsigned i = 0; i < 16; i++) f[i] = (v >> i) & 1;
+#endif
 }
 
 /* At the emulated vblank (patches/njemu-vblank-input.py): the picture of the
@@ -584,11 +594,15 @@ static int in_list(const char *const *list, const char *name)
 
 static double m68k_nominal_clock(void)
 {
+#if EMU_SYSTEM == CPS2
+	return 16000000.0;		/* every CPS2 board: a 16 MHz crystal */
+#else
 	if (in_list(s_10mhz_sets, game_name)) return 10000000.0;
 	if (in_list(s_12mhz_sets, game_name)) return 12000000.0;
 	if (in_list(s_12mhz_families, game_name)) return 12000000.0;
 	if (parent_name[0] && in_list(s_12mhz_families, parent_name)) return 12000000.0;
 	return 10000000.0;
+#endif
 }
 
 /* The CPS-A/B stall the 68000 on its accesses to the graphics RAM and during
@@ -600,14 +614,26 @@ static double m68k_nominal_clock(void)
    game and the eye), in line with what PCB owners found for MAME (65% for
    Hyper Fighting, 60-65% for Captain Commando); the in-game menu and cpu= /
    cpu.<set>= in cpspi.cfg move it between 50 and 70. */
+#if EMU_SYSTEM == CPS2
+/* CPS2: MAME has run the 68000 at 0.7375 of its 16 MHz (11.8 MHz) since
+   2008 to compensate for "RAM access waitstates etc." it does not emulate;
+   that is the centre until a board says otherwise */
+#define CPU_PERCENT_DEFAULT	74
+#else
 #define CPU_PERCENT_DEFAULT	60
-#define CPU_PERCENT_MIN		50
-#define CPU_PERCENT_MAX		70
+#endif
+#define CPU_PERCENT_MIN		(CPU_PERCENT_DEFAULT - 10)
+#define CPU_PERCENT_MAX		(CPU_PERCENT_DEFAULT + 10)
 static unsigned s_cpu_override;		/* 0: the default */
 
 unsigned core_cpu_percent(void)
 {
 	return s_cpu_override ? s_cpu_override : CPU_PERCENT_DEFAULT;
+}
+
+unsigned core_cpu_percent_centre(void)
+{
+	return CPU_PERCENT_DEFAULT;
 }
 
 double lr_m68k_clock(void)
@@ -752,13 +778,19 @@ const char *core_error(void) { return s_error; }
 void core_set_dips(unsigned a, unsigned b, unsigned c)
 {
 	s_dips[0] = a; s_dips[1] = b; s_dips[2] = c;
+#if EMU_SYSTEM == CPS1
 	if (s_loaded)
 	{
 		cps1_dipswitch[0] = a & 255;
 		cps1_dipswitch[1] = b & 255;
 		cps1_dipswitch[2] = c & 255;
 	}
+#endif
 }
 
+#if EMU_SYSTEM == CPS2
+int core_qsound(void) { return 1; }		/* every CPS2 board */
+#else
 int core_qsound(void) { return machine_sound_type == SOUND_QSOUND; }
+#endif
 const char *core_game_name(void) { return game_name; }

@@ -3,6 +3,7 @@
  */
 #include "fontdata.h"
 #include "ui.h"
+#include "cpspi.h"
 #include <circle/font.h>
 #include <circle/util.h>
 #include <circle/timer.h>
@@ -608,7 +609,7 @@ void CUI::DrawCredits (const char *pVersion)
 	char Title[32] = "CPS-PI ";
 	strncat (Title, pVersion, sizeof Title - 8);
 	CText (y0 + 28, Title, UI_WHITE, 2);
-	CText (y0 + 48, "BARE METAL CPS1 FOR RASPBERRY PI", UI_VALUE);
+	CText (y0 + 48, "BARE METAL " CPSPI_SYSTEM " FOR RASPBERRY PI", UI_VALUE);
 	Fill (x0 + 8, y0 + 62, x1 - x0 - 15, 1, UI_FRAME2);
 
 	static const char *Rows[8][2] =

@@ -29,8 +29,8 @@ void cpspi_png_free_rgb (void *p);
 #define ROMS_DIR	CPSPI_DIR "/roms"
 #define NVRAM_DIR	CPSPI_DIR "/nvram"
 #define SHOT_DIR	CPSPI_DIR "/shots"
-#define DB_PATH		CPSPI_DIR "/rominfo.cps1"
-#define NAMES_PATH	CPSPI_DIR "/zipname.cps1"
+#define DB_PATH		CPSPI_DIR "/rominfo." CPSPI_SYS_EXT
+#define NAMES_PATH	CPSPI_DIR "/zipname." CPSPI_SYS_EXT
 #define LOG_PATH	CPSPI_DIR "/LOG.TXT"
 #define BENCH_PATH	CPSPI_DIR "/BENCH.TXT"
 #define BENCH_FLAG	CPSPI_DIR "/BENCH"
@@ -597,10 +597,10 @@ void CKernel::Fatal (int nCode, const char *pMessage)
 		Log ("  Check that the card is FAT32 and that the files are in its root.", COLOR_TEXT);
 		break;
 	case CPSPI_ERR_DB:
-		Log ("  Copy rominfo.cps1 and zipname.cps1 into the cpspi folder.", COLOR_TEXT);
+		Log ("  Copy rominfo." CPSPI_SYS_EXT " and zipname." CPSPI_SYS_EXT " into the cpspi folder.", COLOR_TEXT);
 		break;
 	case CPSPI_ERR_GAME:
-		Log ("  Copy at least one supported CPS1 zip (MAME set) into cpspi/roms.", COLOR_TEXT);
+		Log ("  Copy at least one supported " CPSPI_SYSTEM " zip (MAME set) into cpspi/roms.", COLOR_TEXT);
 		break;
 	case CPSPI_ERR_MEM:
 		Log ("  Not enough memory.", COLOR_TEXT);
@@ -691,12 +691,12 @@ void CKernel::ScanGames (void)
 	char *pDB = LoadText (DB_PATH, &nSize);
 	if (pDB == 0)
 	{
-		Fatal (CPSPI_ERR_DB, "cpspi/rominfo.cps1 not found or unreadable");
+		Fatal (CPSPI_ERR_DB, "cpspi/rominfo." CPSPI_SYS_EXT " not found or unreadable");
 	}
 	m_pTitles = LoadText (NAMES_PATH, &nSize);
 	if (m_pTitles == 0)
 	{
-		Log ("  zipname.cps1 not found: the list shows the file names", COLOR_ERR);
+		Log ("  zipname." CPSPI_SYS_EXT " not found: the list shows the file names", COLOR_ERR);
 	}
 
 	// supported sets and their parents
@@ -731,7 +731,7 @@ void CKernel::ScanGames (void)
 	}
 	delete [] pDB;
 	char Line[160];
-	snprintf (Line, sizeof Line, "Database: %u CPS1 sets", nSets);
+	snprintf (Line, sizeof Line, "Database: %u " CPSPI_SYSTEM " sets", nSets);
 	Log (Line, COLOR_TEXT);
 
 	DIR Dir;
@@ -769,11 +769,11 @@ void CKernel::ScanGames (void)
 		}
 		if (pSet == 0)
 		{
-			snprintf (Line, sizeof Line, "  %s: not a supported CPS1 set, skipped", Info.fname);
+			snprintf (Line, sizeof Line, "  %s: not a supported " CPSPI_SYSTEM " set, skipped", Info.fname);
 			Log (Line, COLOR_ERR);
 			continue;
 		}
-		if (strcmp (pSet->Parent, "cps1") != 0)
+		if (strcmp (pSet->Parent, CPSPI_SYS_EXT) != 0)
 		{
 			char Path[128];
 			FILINFO PInfo;
@@ -1129,7 +1129,7 @@ void CKernel::Benchmark (void)
 	FormatMs (c, sizeof c, T.nMax); FormatMs (d, sizeof d, T.nMin);
 	snprintf (Line, sizeof Line, "  total                   %7s %7s %7s %7s", a, b, c, d);
 	REPORT (COLOR_TEXT);
-	snprintf (Line, sizeof Line, "Top speed: %u%% of a real CPS1 (100%% = 59.64 fps)", nSpeed);
+	snprintf (Line, sizeof Line, "Top speed: %u%% of a real " CPSPI_SYSTEM " (100%% = 59.64 fps)", nSpeed);
 	REPORT (nSpeed >= 150 ? COLOR_OK : COLOR_ERR);
 	snprintf (Line, sizeof Line, "Frames over 16.7 ms (too slow for full speed): %u of %u (%u.%u%%)",
 		  nOver, BENCH_FRAMES, nOver * 100 / BENCH_FRAMES, (nOver * 1000 / BENCH_FRAMES) % 10);
@@ -1400,7 +1400,7 @@ void CKernel::LoadConfig (void)
 		if (p[3] == '=')
 		{
 			unsigned n = (unsigned) atoi (p + 4);
-			if (n >= 50 && n <= 70) m_nCpuPercent = n;
+			if (n >= 40 && n <= 90) m_nCpuPercent = n;	// the core keeps its own +-10
 		}
 		else if (p[3] == '.')
 		{
@@ -1415,7 +1415,7 @@ void CKernel::LoadConfig (void)
 			if (*q == '=')
 			{
 				unsigned n = (unsigned) atoi (q + 1);
-				if (n >= 50 && n <= 70) SetCpuPercentFor (Set, n);
+				if (n >= 40 && n <= 90) SetCpuPercentFor (Set, n);
 			}
 		}
 	}
@@ -2270,9 +2270,10 @@ void CKernel::RunGame (void)
 				// 60% centre (50-70%): 1 with left and right, 5 with buttons
 				// 1 and 3, kept for this set
 				int nDir = (nNew & BTN_LEFT) ? -1 : (nNew & BTN_RIGHT) ? 1 : (nNew & BTN_3) ? -5 : 5;
+				int nCentre = (int) core_cpu_percent_centre ();
 				int nPercent = (int) core_cpu_percent () + nDir;
-				if (nPercent < 50) nPercent = 50;
-				if (nPercent > 70) nPercent = 70;
+				if (nPercent < nCentre - 10) nPercent = nCentre - 10;
+				if (nPercent > nCentre + 10) nPercent = nCentre + 10;
 				core_set_cpu_percent ((unsigned) nPercent);
 				SetCpuPercentFor (m_pGames[m_nLoaded].File, (unsigned) nPercent);
 				bCpuChanged = TRUE;
@@ -2347,7 +2348,7 @@ void CKernel::RunGame (void)
 					Items[i].bDisabled = FALSE;
 				}
 				char Speed[20];
-				int nOffset = (int) core_cpu_percent () - 60;
+				int nOffset = (int) core_cpu_percent () - (int) core_cpu_percent_centre ();
 				snprintf (Speed, sizeof Speed, "%s%d", nOffset > 0 ? "+" : "", nOffset);
 				Items[GmSpeed].pValue = Speed;
 				const char *pMsg = MenuMsg;
@@ -2534,7 +2535,7 @@ TShutdownMode CKernel::Run (void)
 	}
 
 	char Line[180];
-	Log ("cps-pi - bare metal CPS1 emulator", COLOR_TITLE);
+	Log ("cps-pi - bare metal " CPSPI_SYSTEM " emulator", COLOR_TITLE);
 	snprintf (Line, sizeof Line, "Version %s, built %s %s", CPSPI_VERSION, __DATE__, __TIME__);
 	Log (Line, COLOR_DIM);
 
@@ -2587,7 +2588,7 @@ TShutdownMode CKernel::Run (void)
 	Log (Line, m_nGames ? COLOR_OK : COLOR_ERR);
 	if (m_nGames == 0)
 	{
-		Fatal (CPSPI_ERR_GAME, "no supported CPS1 zip in the cpspi/roms folder");
+		Fatal (CPSPI_ERR_GAME, "no supported " CPSPI_SYSTEM " zip in the cpspi/roms folder");
 	}
 	SaveLog ();
 

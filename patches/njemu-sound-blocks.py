@@ -11,12 +11,13 @@ quarter of the frame's sound each time, the vblank renders the last
 quarter, and the kernel paces the emulation so that the blocks reach the
 HDMI output a few milliseconds after they are produced.
 
-    python patches/njemu-sound-blocks.py build/rpi3/njemu
+    python patches/njemu-sound-blocks.py build/rpi3/njemu [cps1|cps2]
 """
 import os
 import sys
 
 root = sys.argv[1]
+system = sys.argv[2] if len(sys.argv) > 2 else "cps1"
 
 
 def patch(path, old, new, where):
@@ -36,15 +37,29 @@ def patch(path, old, new, where):
     print("njemu-sound-blocks: patched %s" % path)
 
 
-patch("cps1/timer.h",
-      "#define VBLANK_INTERRUPT\t4\n#define MAX_TIMER\t\t\t5\n",
-      "#define VBLANK_INTERRUPT\t4\n#define SOUND_BLOCK\t\t\t5\t/* cps-pi: sound rendered in blocks */\n"
-      "#define MAX_TIMER\t\t\t6\n",
-      "timer slots")
+if system == "cps2":
+    patch("cps2/timer.h",
+          "#define RASTER_INTERRUPT2\t\t3\n#define MAX_TIMER\t\t\t\t4\n",
+          "#define RASTER_INTERRUPT2\t\t3\n#define SOUND_BLOCK\t\t\t\t4\t/* cps-pi: sound rendered in blocks */\n"
+          "#define MAX_TIMER\t\t\t\t5\n",
+          "timer slots")
 
-patch("cps1/timer.c",
-      "\ttimer_set_vblank_interrupt();\n\n\twhile (timer_left > 0)\n",
-      "\ttimer_set_vblank_interrupt();\n"
-      "\ttimer_set(SOUND_BLOCK, USECS_PER_SCANLINE * 64, 0, lr_sound_block);\t/* cps-pi */\n\n"
-      "\twhile (timer_left > 0)\n",
-      "frame start")
+    patch("cps2/timer.c",
+          "\ttimer_set_vblank_interrupt();\n\tif (driver->flags & 2) cps2_build_palette();\n",
+          "\ttimer_set_vblank_interrupt();\n"
+          "\ttimer_set(SOUND_BLOCK, USECS_PER_SCANLINE * 64, 0, lr_sound_block);\t/* cps-pi */\n"
+          "\tif (driver->flags & 2) cps2_build_palette();\n",
+          "frame start")
+else:
+    patch("cps1/timer.h",
+          "#define VBLANK_INTERRUPT\t4\n#define MAX_TIMER\t\t\t5\n",
+          "#define VBLANK_INTERRUPT\t4\n#define SOUND_BLOCK\t\t\t5\t/* cps-pi: sound rendered in blocks */\n"
+          "#define MAX_TIMER\t\t\t6\n",
+          "timer slots")
+
+    patch("cps1/timer.c",
+          "\ttimer_set_vblank_interrupt();\n\n\twhile (timer_left > 0)\n",
+          "\ttimer_set_vblank_interrupt();\n"
+          "\ttimer_set(SOUND_BLOCK, USECS_PER_SCANLINE * 64, 0, lr_sound_block);\t/* cps-pi */\n\n"
+          "\twhile (timer_left > 0)\n",
+          "frame start")

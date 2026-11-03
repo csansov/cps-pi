@@ -91,6 +91,7 @@ unsigned core_m68k_mhz (void);
    set; applies at once to the running game */
 unsigned core_cpu_percent (void);
 void core_set_cpu_percent (unsigned percent);
+unsigned core_cpu_percent_centre (void);	/* the default (60 CPS1, 74 CPS2); range +-10 */
 const char *core_game_name (void);
 
 #ifdef __cplusplus

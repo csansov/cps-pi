@@ -12,12 +12,18 @@ timing of the real board.
    board's wait states; NJEMU had 10 MHz for every game. timer_set_m68k_clock()
    applies it at reset and whenever the share changes while playing.
 
-    python patches/njemu-cps1-timing.py build/rpi3/njemu
+3. CPS2 (second argument cps2): the same frame period (the CPS2 video
+   timing is the CPS1's: NJEMU had 59.633 Hz) and the 68000 clock from
+   lr_m68k_clock() in place of the 11.8 MHz NJEMU copied from MAME (16 MHz
+   less the share that stands in for the wait states).
+
+    python patches/njemu-cps1-timing.py build/rpi3/njemu [cps1|cps2]
 """
 import os
 import sys
 
 root = sys.argv[1]
+system = sys.argv[2] if len(sys.argv) > 2 else "cps1"
 
 
 def patch(path, old, new, where):
@@ -37,26 +43,57 @@ def patch(path, old, new, where):
     print("njemu-cps1-timing: patched %s" % path)
 
 
-patch("emucfg.h",
-      "#define EMU_SYSTEM\t\t\t\tCPS1\n#define SYSTEM_NAME\t\t\t\t\"CPS1\"\n"
-      "#define FPS\t\t\t\t\t\t60.0\n#define TICKS_PER_FRAME\t\t\t16666.666666\n",
-      "#define EMU_SYSTEM\t\t\t\tCPS1\n#define SYSTEM_NAME\t\t\t\t\"CPS1\"\n"
-      "#define FPS\t\t\t\t\t\t59.637405\t/* cps-pi: 8 MHz / (512 * 262), the real board */\n"
-      "#define TICKS_PER_FRAME\t\t\t16768.0\n",
-      "CPS1 FPS")
+if system == "cps2":
+    patch("emucfg.h",
+          "#define EMU_SYSTEM\t\t\t\tCPS2\n#define SYSTEM_NAME\t\t\t\t\"CPS2\"\n"
+          "#define FPS\t\t\t\t\t\t59.633333\n#define TICKS_PER_FRAME\t\t\t16769.144773\n",
+          "#define EMU_SYSTEM\t\t\t\tCPS2\n#define SYSTEM_NAME\t\t\t\t\"CPS2\"\n"
+          "#define FPS\t\t\t\t\t\t59.637405\t/* cps-pi: 8 MHz / (512 * 262), as the CPS1 */\n"
+          "#define TICKS_PER_FRAME\t\t\t16768.0\n",
+          "CPS2 FPS")
 
-patch("cps1/timer.c",
-      "\tcpu[CPU_M68000].usec_to_cycles = 10000000.0/1000000.0;\n"
-      "\tcpu[CPU_M68000].cycles_to_usec = 1000000.0/10000000.0;\n",
-      "\ttimer_set_m68k_clock();\t/* cps-pi: 10 or 12 MHz, less the wait states' share */\n",
-      "68000 clock")
+    patch("cps2/timer.c",
+          "\t\tm68000_execute((int)(timer_ticks * (11800000.0 / 1000000.0)));\n",
+          "\t\tm68000_execute((int)(timer_ticks * m68k_cycles_per_usec));\t/* cps-pi */\n",
+          "68000 execute")
 
-patch("cps1/timer.c",
-      "void timer_reset(void)\n{\n",
-      "/* cps-pi: the 68000 clock from lr_m68k_clock() (njemu_pi.c), at reset and\n"
-      "   whenever the share of the clock changes while the game runs */\n"
-      "void timer_set_m68k_clock(void)\n{\n"
-      "\tcpu[CPU_M68000].usec_to_cycles = lr_m68k_clock()/1000000.0;\n"
-      "\tcpu[CPU_M68000].cycles_to_usec = 1000000.0/lr_m68k_clock();\n}\n\n"
-      "void timer_reset(void)\n{\n",
-      "timer_reset")
+    patch("cps2/timer.c",
+          "void timer_reset(void)\n{\n",
+          "/* cps-pi: the 68000 clock from lr_m68k_clock() (njemu_pi.c): 16 MHz less\n"
+          "   the share that stands in for the wait states (NJEMU had MAME's flat\n"
+          "   11.8 MHz); at reset and whenever the share changes while the game runs */\n"
+          "static float m68k_cycles_per_usec = 11.8;\n"
+          "void timer_set_m68k_clock(void)\n{\n"
+          "\tm68k_cycles_per_usec = lr_m68k_clock()/1000000.0;\n}\n\n"
+          "void timer_reset(void)\n{\n",
+          "timer_reset")
+
+    patch("cps2/timer.c",
+          "\ttime_slice = 1000000.0 / FPS;\n\n\ttimer_set(QSOUND_INTERRUPT, TIME_IN_HZ(251), 0, qsound_interrupt);\n}\n",
+          "\ttime_slice = 1000000.0 / FPS;\n\ttimer_set_m68k_clock();\t/* cps-pi */\n\n"
+          "\ttimer_set(QSOUND_INTERRUPT, TIME_IN_HZ(251), 0, qsound_interrupt);\n}\n",
+          "timer_reset body")
+else:
+    patch("emucfg.h",
+          "#define EMU_SYSTEM\t\t\t\tCPS1\n#define SYSTEM_NAME\t\t\t\t\"CPS1\"\n"
+          "#define FPS\t\t\t\t\t\t60.0\n#define TICKS_PER_FRAME\t\t\t16666.666666\n",
+          "#define EMU_SYSTEM\t\t\t\tCPS1\n#define SYSTEM_NAME\t\t\t\t\"CPS1\"\n"
+          "#define FPS\t\t\t\t\t\t59.637405\t/* cps-pi: 8 MHz / (512 * 262), the real board */\n"
+          "#define TICKS_PER_FRAME\t\t\t16768.0\n",
+          "CPS1 FPS")
+
+    patch("cps1/timer.c",
+          "\tcpu[CPU_M68000].usec_to_cycles = 10000000.0/1000000.0;\n"
+          "\tcpu[CPU_M68000].cycles_to_usec = 1000000.0/10000000.0;\n",
+          "\ttimer_set_m68k_clock();\t/* cps-pi: 10 or 12 MHz, less the wait states' share */\n",
+          "68000 clock")
+
+    patch("cps1/timer.c",
+          "void timer_reset(void)\n{\n",
+          "/* cps-pi: the 68000 clock from lr_m68k_clock() (njemu_pi.c), at reset and\n"
+          "   whenever the share of the clock changes while the game runs */\n"
+          "void timer_set_m68k_clock(void)\n{\n"
+          "\tcpu[CPU_M68000].usec_to_cycles = lr_m68k_clock()/1000000.0;\n"
+          "\tcpu[CPU_M68000].cycles_to_usec = 1000000.0/lr_m68k_clock();\n}\n\n"
+          "void timer_reset(void)\n{\n",
+          "timer_reset")
