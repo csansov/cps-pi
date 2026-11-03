@@ -4,7 +4,7 @@
 #ifndef CPSPI_H
 #define CPSPI_H
 
-#define CPSPI_VERSION	"0.7.2"
+#define CPSPI_VERSION	"0.8.0"
 
 /* Error codes = number of green LED blinks when the screen is unusable */
 #define CPSPI_ERR_FB	2	/* framebuffer / HDMI */

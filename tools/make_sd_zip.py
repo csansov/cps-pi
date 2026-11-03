@@ -25,8 +25,8 @@ with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
                 continue
             if rel.startswith("cpspi/nvram/") or rel.startswith("cpspi/shots/"):
                 continue
-            if rel.upper() in ("CPSPI/LOG.TXT", "CPSPI/LAST.TXT"):
-                continue
+            if rel.upper() in ("CPSPI/LOG.TXT", "CPSPI/LAST.TXT", "CPSPI/OVERLAY.PNG"):
+                continue		# the bezel is the user's own, never distributed
             z.write(path, rel)
             names.append(rel)
     z.writestr("cpspi/roms/put-your-cps1-zips-here.txt",

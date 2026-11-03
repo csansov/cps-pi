@@ -9,3 +9,6 @@ dist/sd/cpspi/roms/*.zip
 dist/sd/cpspi/nvram/
 dist/sd/cpspi/shots/
 *.log
+# bezel artwork: the user makes their own, nothing is distributed
+art/
+dist/sd/cpspi/overlay.png

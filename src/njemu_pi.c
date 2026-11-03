@@ -595,36 +595,19 @@ static double m68k_nominal_clock(void)
    their DMA; no emulator reproduces those wait states (MAME Testers 408, open
    since 2008), so the games run faster than the boards: the Street Fighter II
    games visibly so, Hyper Fighting most. Until the stalls are emulated the
-   68000 gets a share of its clock, per game: the Street Fighter II values
-   were calibrated against a CPS1 board by timing rounds (60% for World
-   Warrior and Champion Edition, 65% for Hyper Fighting) and agree with what
-   PCB owners found for MAME (65% for Hyper Fighting, 60-65% for Captain
-   Commando); every other game gets the middle of that band, 62%, until it
-   is measured. cpu= / cpu.<set>= in cpspi.cfg and the in-game menu set it.
-   Families by set name prefix (sf2hf before sf2), then by parent. */
-#define CPU_PERCENT_DEFAULT	62
-static const struct { const char *prefix; unsigned percent; } s_cpu_defaults[] = {
-	{"sf2hf", 65},
-	{"sf2ce", 60},
-	{"sf2",   60},
-	{NULL, CPU_PERCENT_DEFAULT}
-};
-static unsigned s_cpu_override;		/* 0: the table */
-
-static unsigned cpu_default_percent(const char *name)
-{
-	for (unsigned i = 0; s_cpu_defaults[i].prefix; i++)
-		if (strncmp(name, s_cpu_defaults[i].prefix, strlen(s_cpu_defaults[i].prefix)) == 0)
-			return s_cpu_defaults[i].percent;
-	return 0;
-}
+   68000 gets a share of its clock: 60% by default, calibrated against a
+   CPS1 board with the Street Fighter II games (55-65% depending on the
+   game and the eye), in line with what PCB owners found for MAME (65% for
+   Hyper Fighting, 60-65% for Captain Commando); the in-game menu and cpu= /
+   cpu.<set>= in cpspi.cfg move it between 50 and 70. */
+#define CPU_PERCENT_DEFAULT	60
+#define CPU_PERCENT_MIN		50
+#define CPU_PERCENT_MAX		70
+static unsigned s_cpu_override;		/* 0: the default */
 
 unsigned core_cpu_percent(void)
 {
-	if (s_cpu_override) return s_cpu_override;
-	unsigned p = cpu_default_percent(game_name);
-	if (!p && parent_name[0]) p = cpu_default_percent(parent_name);
-	return p ? p : CPU_PERCENT_DEFAULT;
+	return s_cpu_override ? s_cpu_override : CPU_PERCENT_DEFAULT;
 }
 
 double lr_m68k_clock(void)
@@ -634,7 +617,7 @@ double lr_m68k_clock(void)
 
 void core_set_cpu_percent(unsigned percent)
 {
-	s_cpu_override = percent >= 30 && percent <= 150 ? percent : 0;
+	s_cpu_override = percent >= CPU_PERCENT_MIN && percent <= CPU_PERCENT_MAX ? percent : 0;
 	if (s_loaded) timer_set_m68k_clock();
 }
 

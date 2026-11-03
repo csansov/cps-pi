@@ -13,10 +13,11 @@ maintained by fjtrujy and HonkeyKong). The frontend, the boot sequence, the
 menus, the pad handling and the video and audio paths are neo-pi's, adapted to
 the CPS1 picture and controls.
 
-Status: **0.5.0**. Runs on a Raspberry Pi 3 Model B at the board's 59.64 fps
-with no dropped frames (Street Fighter II' Champion Edition, 68000 at
-12 MHz: emulation 6-8 ms per frame in play, worst 11 ms; the picture is
-written in about 1.5 ms by the four cores). Expect rough edges.
+Status: **0.8.0**. Runs on a Raspberry Pi 3 Model B at the board's 59.64 fps
+with no dropped frames (Street Fighter II' Champion Edition: emulation
+about 4 ms per frame in play, the picture written in 1.4 ms by the four
+cores, the controls read 1 ms before each frame, the sound 18 ms behind
+the chips). Tested against a real CPS1 board for speed. Expect rough edges.
 
 ## Why
 
@@ -69,16 +70,15 @@ vblank callback order and the board's timing).
   68000 on its accesses to the graphics RAM and during their DMA; no
   emulator reproduces that (MAME Testers 408, open since 2008), so the
   games run faster than the boards: the Street Fighter II games visibly,
-  Hyper Fighting most. Until the stalls are emulated, the 68000 gets a
-  share of its clock per game: 60% for World Warrior and Champion Edition
-  and 65% for Hyper Fighting, calibrated against a CPS1 board by timing
-  rounds (and in line with what PCB owners found for MAME: 65% for Hyper
-  Fighting, 60-65% for Captain Commando); every other game gets 62%, the
-  middle of that band, until it is measured. The in-game menu's CPU SPEED
-  item changes it while playing (1% with left and right, 5% with buttons 1
-  and 3) and keeps it per set (`cpu.<set>=NN` in `cpspi.cfg`; `cpu=NN` for
-  every game). The sound is not affected: the music's tempo comes from the
-  YM2151's own timers.
+  Hyper Fighting most. Until the stalls are emulated, the 68000 gets 60% of
+  its clock, calibrated against a real CPS1 board with the Street Fighter
+  II games and in line with what PCB owners found for MAME (65% for Hyper
+  Fighting, 60-65% for Captain Commando). The in-game menu's CPU SPEED
+  item adjusts it while playing on a scale from -10 (50%) to +10 (70%),
+  with 0 the board, 1 step with left and right and 5 with buttons 1 and 3,
+  and keeps it per set (`cpu.<set>=NN` in `cpspi.cfg`, in percent; `cpu=NN`
+  for every game). The sound is not affected: the music's tempo comes from
+  the YM2151's own timers.
 - The board's input timing. The core's vblank callback hands the finished
   picture of the frame to the kernel *before* raising the interrupt whose
   handler reads the input ports; the kernel flips the picture, waits until
@@ -110,12 +110,13 @@ vblank callback order and the board's timing).
   TEST switch: DIP switches and board tests), game list, power off. Select+1
   takes a screenshot, Select+2 shows the status line (FPS, load, temperature),
   Select+3 the credits. A short Select press inserts a coin.
-- A bezel around the picture: `cpspi/overlay.png`, an 8 bit RGB or RGBA PNG
-  the size of the display (scaled if not), shown wherever the game picture
-  is not. The one shipped (`dist/sd/cpspi/overlay.png`, carbon texture,
-  Capcom Play System panels and a gold frame) is composed by
-  `tools/make_overlay.py` from `art/overlay-source.jpg` for the 1080p
-  layout; drop in any other picture, or `overlay=off` for black.
+- A bezel of your own around the picture: put an 8 bit RGB or RGBA PNG
+  (not interlaced) the size of the display at `cpspi/overlay.png` and it is
+  shown wherever the game picture is not (scaled if it is another size).
+  At 1080p the picture occupies 1194x896 pixels with its top left corner
+  at (360, 92); whatever the PNG has there is never seen. None is
+  included: make one with the artwork you like. `overlay=off` in
+  `cpspi/cpspi.cfg`, or the OPTIONS menu, leaves black.
 - OPTIONS from the game list (button 4): picture 4:3 or pixel, scanlines,
   overlay on or off, controls, power off; saved in `cpspi/cpspi.cfg`
   (`aspect=`, `filter=`, `overlay=off`, `scaler=cpu`, `usbpoll=native`; by

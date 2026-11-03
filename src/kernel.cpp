@@ -1388,8 +1388,9 @@ void CKernel::LoadConfig (void)
 	if (strstr (Text, "multicore=off"))	m_bMultiCore = FALSE;
 	// overlay=off: black around the picture even if cpspi/overlay.png exists
 	if (strstr (Text, "overlay=off"))	m_bOverlay = FALSE;
-	// cpu=NN: the 68000 runs at NN% of its clock in every game (the wait
-	// states of the board, which are not emulated); cpu.<set>=NN per set
+	// cpu=NN: the 68000 runs at NN% of its clock (50-70, 60 unless set) in
+	// every game (the wait states of the board, which are not emulated);
+	// cpu.<set>=NN per set
 	for (const char *p = Text; (p = strstr (p, "cpu")) != 0; p++)
 	{
 		if (p != Text && p[-1] != '\n')
@@ -1399,7 +1400,7 @@ void CKernel::LoadConfig (void)
 		if (p[3] == '=')
 		{
 			unsigned n = (unsigned) atoi (p + 4);
-			if (n >= 30 && n <= 150) m_nCpuPercent = n;
+			if (n >= 50 && n <= 70) m_nCpuPercent = n;
 		}
 		else if (p[3] == '.')
 		{
@@ -1414,7 +1415,7 @@ void CKernel::LoadConfig (void)
 			if (*q == '=')
 			{
 				unsigned n = (unsigned) atoi (q + 1);
-				if (n >= 30 && n <= 150) SetCpuPercentFor (Set, n);
+				if (n >= 50 && n <= 70) SetCpuPercentFor (Set, n);
 			}
 		}
 	}
@@ -2265,12 +2266,13 @@ void CKernel::RunGame (void)
 
 			if (nMenuSel == GmSpeed && (nNew & (BTN_LEFT | BTN_RIGHT | BTN_1 | BTN_3)))
 			{
-				// the 68000's share of its clock: 1% with left and right, 5%
-				// with buttons 1 and 3, kept for this set
+				// the 68000's share of its clock, shown as -10..+10 around the
+				// 60% centre (50-70%): 1 with left and right, 5 with buttons
+				// 1 and 3, kept for this set
 				int nDir = (nNew & BTN_LEFT) ? -1 : (nNew & BTN_RIGHT) ? 1 : (nNew & BTN_3) ? -5 : 5;
 				int nPercent = (int) core_cpu_percent () + nDir;
 				if (nPercent < 50) nPercent = 50;
-				if (nPercent > 100) nPercent = 100;
+				if (nPercent > 70) nPercent = 70;
 				core_set_cpu_percent ((unsigned) nPercent);
 				SetCpuPercentFor (m_pGames[m_nLoaded].File, (unsigned) nPercent);
 				bCpuChanged = TRUE;
@@ -2345,7 +2347,8 @@ void CKernel::RunGame (void)
 					Items[i].bDisabled = FALSE;
 				}
 				char Speed[20];
-				snprintf (Speed, sizeof Speed, "%u%%", core_cpu_percent ());
+				int nOffset = (int) core_cpu_percent () - 60;
+				snprintf (Speed, sizeof Speed, "%s%d", nOffset > 0 ? "+" : "", nOffset);
 				Items[GmSpeed].pValue = Speed;
 				const char *pMsg = MenuMsg;
 				u32 nMsgColor = nMenuMsgColor;
@@ -2356,7 +2359,7 @@ void CKernel::RunGame (void)
 				}
 				else if (!MenuMsg[0] && nMenuSel == GmSpeed)
 				{
-					pMsg = "LEFT RIGHT 1%  BUTTONS 1 3 5%  LOWER = SLOWER";
+					pMsg = "-10 SLOWER  0 = THE BOARD  +10 FASTER";
 					nMsgColor = UI_DIM;
 				}
 				static const TButtonHint Hints[2] = {{'1', "SELECT"}, {'2', "RESUME"}};
