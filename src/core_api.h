@@ -69,6 +69,11 @@ void core_set_input (unsigned player, uint32_t flags);
 void core_set_input_callback (void (*callback) (void));
 /* microseconds the core spent rendering the picture of the last frame */
 unsigned core_render_us (void);
+/* the frame's sound comes in four blocks (block 0-3, lines 64, 128, 192 and
+   the vblank): interleaved stereo at CORE_AUDIO_RATE, handed over as soon
+   as rendered, inside core_frame; block 3 is followed by the vblank callback */
+void core_set_audio_callback (void (*callback) (const int16_t *samples, unsigned frames,
+						 unsigned block));
 unsigned core_players (void);
 unsigned core_buttons (void);
 int core_fatal (void);

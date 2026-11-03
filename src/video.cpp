@@ -12,6 +12,7 @@
 #include <circle/timer.h>
 #include <circle/bcm2835.h>
 #include <circle/memio.h>
+#include <fatfs/ff.h>
 
 #define PROPTAG_RELEASE_BUFFER	0x00048001
 #define PROPTAG_GET_PIXEL_ORDER	0x00040006	// 0 = BGR, 1 = RGB
@@ -30,6 +31,7 @@
 
 #define DRAW_CORES	4
 #define LINES_PER_CORE	(GAME_H / DRAW_CORES)
+#define FILE_CORE	3			// also writes files in the background
 
 // per-core scratch: one scaled line, the same darkened, the converted source line
 static u32 s_Line[DRAW_CORES][MAX_LINE];
@@ -45,13 +47,46 @@ public:
 		m_nJob (0),
 		m_pSource (0),
 		m_bFlip (FALSE),
-		m_bBroken (FALSE)
+		m_bBroken (FALSE),
+		m_nFileJob (0),
+		m_nFileDone (0),
+		m_pFilePath (0),
+		m_pFileData (0),
+		m_nFileSize (0),
+		m_bFileOK (FALSE)
 	{
 		for (unsigned c = 0; c < DRAW_CORES; c++)
 		{
 			m_nDone[c] = 0;
 			m_bAlive[c] = FALSE;
+			m_bBusy[c] = FALSE;
 		}
+	}
+
+	// a file for core FILE_CORE to write; FALSE if one is still pending
+	boolean PostFileJob (const char *pPath, const char *pData, size_t nSize)
+	{
+		if (m_bBroken || m_nFileJob != m_nFileDone)
+		{
+			return FALSE;
+		}
+		m_pFilePath = pPath;
+		m_pFileData = pData;
+		m_nFileSize = nSize;
+		DataMemBarrier ();
+		m_nFileJob++;
+		DataSyncBarrier ();
+		asm volatile ("sev");
+		return TRUE;
+	}
+
+	void WaitForFileJob (void)
+	{
+		unsigned nStart = CTimer::GetClockTicks ();
+		while (m_nFileJob != m_nFileDone && CTimer::GetClockTicks () - nStart < 5000000)
+		{
+		}
+		DataMemBarrier ();
 	}
 
 	// starts cores 1-3 and waits until they are in their loop
@@ -89,6 +124,16 @@ public:
 		unsigned nStart = CTimer::GetClockTicks ();
 		for (unsigned c = 1; c < DRAW_CORES; c++)
 		{
+			if (m_bBusy[c])
+			{
+				// writing a file: its share here, and marked done so that it
+				// does not draw this job into the next back buffer afterwards
+				// (if it draws it now as well, harmless: the same lines)
+				m_pVideo->DrawGameLines (pSource, c * LINES_PER_CORE, (c + 1) * LINES_PER_CORE,
+							 s_Line[0], s_Dark[0], s_Conv[0], bFlip);
+				m_nDone[c] = nJob;
+				continue;
+			}
 			while (m_nDone[c] != nJob)
 			{
 				if (CTimer::GetClockTicks () - nStart > 50000)
@@ -112,22 +157,72 @@ public:
 		}
 		m_bAlive[nCore] = TRUE;
 		DataSyncBarrier ();
-		unsigned nSeen = 0;
+		unsigned nSeen = 0, nFileSeen = 0;
 		while (1)
 		{
-			while (m_nJob == nSeen)
+			while (m_nJob == nSeen && (nCore != FILE_CORE || m_nFileJob == nFileSeen))
 			{
 				asm volatile ("wfe" ::: "memory");
 			}
-			nSeen = m_nJob;
-			DataMemBarrier ();
-			m_pVideo->DrawGameLines (m_pSource, nCore * LINES_PER_CORE, (nCore + 1) * LINES_PER_CORE,
-						 s_Line[nCore], s_Dark[nCore], s_Conv[nCore], m_bFlip);
-			DataSyncBarrier ();		// every store to the framebuffer done
-			m_nDone[nCore] = nSeen;
-			DataSyncBarrier ();
-			asm volatile ("sev");
+			if (m_nJob != nSeen)
+			{
+				nSeen = m_nJob;
+				if (m_nDone[nCore] != nSeen)	// not already drawn by core 0
+				{
+					DrawShare (nCore, nSeen);
+				}
+			}
+			if (nCore == FILE_CORE && m_nFileJob != nFileSeen)
+			{
+				// busy first, then one more look at the draw job: core 0 either
+				// sees busy and draws this share itself, or posted the job
+				// before and finds it done here
+				m_bBusy[nCore] = TRUE;
+				DataSyncBarrier ();
+				if (m_nJob != nSeen)
+				{
+					nSeen = m_nJob;
+					if (m_nDone[nCore] != nSeen)
+					{
+						DrawShare (nCore, nSeen);
+					}
+				}
+				nFileSeen = m_nFileJob;
+				DataMemBarrier ();
+				WriteFile ();
+				DataSyncBarrier ();
+				m_nFileDone = nFileSeen;
+				m_bBusy[nCore] = FALSE;
+				DataSyncBarrier ();
+				asm volatile ("sev");
+			}
 		}
+	}
+
+private:
+	void DrawShare (unsigned nCore, unsigned nJob)
+	{
+		DataMemBarrier ();
+		m_pVideo->DrawGameLines (m_pSource, nCore * LINES_PER_CORE, (nCore + 1) * LINES_PER_CORE,
+					 s_Line[nCore], s_Dark[nCore], s_Conv[nCore], m_bFlip);
+		DataSyncBarrier ();		// every store to the framebuffer done
+		m_nDone[nCore] = nJob;
+		DataSyncBarrier ();
+		asm volatile ("sev");
+	}
+
+	void WriteFile (void)
+	{
+		m_bFileOK = FALSE;
+		FIL File;
+		if (f_open (&File, (const char *) m_pFilePath, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK)
+		{
+			return;
+		}
+		UINT nWritten = 0;
+		FRESULT r = f_write (&File, (const char *) m_pFileData, m_nFileSize, &nWritten);
+		f_close (&File);
+		m_bFileOK = r == FR_OK && nWritten == m_nFileSize;
 	}
 
 private:
@@ -135,9 +230,15 @@ private:
 	volatile unsigned m_nJob;
 	volatile unsigned m_nDone[DRAW_CORES];
 	volatile boolean m_bAlive[DRAW_CORES];
+	volatile boolean m_bBusy[DRAW_CORES];
 	const u16 *volatile m_pSource;
 	volatile boolean m_bFlip;
 	volatile boolean m_bBroken;
+	volatile unsigned m_nFileJob, m_nFileDone;
+	const char *volatile m_pFilePath;
+	const char *volatile m_pFileData;
+	volatile size_t m_nFileSize;
+	volatile boolean m_bFileOK;
 };
 
 CVideoOut::CVideoOut (void)
@@ -168,8 +269,26 @@ CVideoOut::CVideoOut (void)
 	m_pColWeight (0),
 	m_nPixelOrder (1),
 	m_bRLow (TRUE),
-	m_pDrawCores (0)
+	m_pDrawCores (0),
+	m_nHVSChannel (-1)
 {
+}
+
+boolean CVideoOut::PostFileJob (const char *pPath, const char *pData, size_t nSize)
+{
+	if (m_pDrawCores == 0 || !m_pDrawCores->IsWorking ())
+	{
+		return FALSE;
+	}
+	return m_pDrawCores->PostFileJob (pPath, pData, nSize);
+}
+
+void CVideoOut::WaitForFileJob (void)
+{
+	if (m_pDrawCores != 0)
+	{
+		m_pDrawCores->WaitForFileJob ();
+	}
 }
 
 CVideoOut::~CVideoOut (void)
@@ -723,7 +842,52 @@ boolean CVideoOut::Flip (void)
 
 boolean CVideoOut::WaitForVSync (void)
 {
+	if (m_nHVSChannel >= 0)
+	{
+		// the line being composed climbs through the frame and holds at the
+		// last one during the blanking; the drop is the start of the next frame
+		unsigned nStart = CTimer::GetClockTicks ();
+		unsigned nPrev = GetHVSLine ();
+		while (CTimer::GetClockTicks () - nStart < 40000)
+		{
+			unsigned nLine = GetHVSLine ();
+			if (nLine < nPrev)
+			{
+				return TRUE;
+			}
+			nPrev = nLine;
+		}
+		m_nHVSChannel = -1;		// the counter stopped: the firmware from now on
+	}
 	return m_pFrameBuffer->WaitForVerticalSync ();
+}
+
+boolean CVideoOut::ProbeHVS (void)
+{
+	m_nHVSChannel = -1;
+	for (unsigned c = 0; c < 3 && m_nHVSChannel < 0; c++)
+	{
+		// a third of a frame of samples: running, and the line moving
+		unsigned nMin = ~0u, nMax = 0;
+		boolean bRunning = TRUE;
+		for (unsigned i = 0; i < 400 && bRunning; i++)
+		{
+			u32 nStat = ReadHVSStat (c);
+			unsigned nMode = nStat >> 30, nLine = nStat & 0xFFF;
+			if (nMode < 2)
+			{
+				bRunning = FALSE;
+			}
+			if (nLine < nMin) nMin = nLine;
+			if (nLine > nMax) nMax = nLine;
+			CTimer::SimpleusDelay (15);
+		}
+		if (bRunning && nMax > nMin && nMax <= m_nDispH + 64)
+		{
+			m_nHVSChannel = (int) c;
+		}
+	}
+	return m_nHVSChannel >= 0;
 }
 
 u32 CVideoOut::ReadHVSStat (unsigned nChannel) const

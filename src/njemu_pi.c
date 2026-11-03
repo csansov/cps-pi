@@ -449,9 +449,16 @@ void sound_thread_set_volume(void) {}
 void sound_thread_enable(int on) { s_sound_enabled = on; }
 void lr_audio_reset(void) { s_remainder = 0; s_res_pos = 0; s_res_prev[0] = s_res_prev[1] = 0; s_out_frames = 0; }
 
-void lr_audio_frame(void)
+/* The frame's sound in four blocks (lines 64, 128, 192 and the vblank,
+   patches/njemu-sound-blocks.py): each renders a quarter of the frame's
+   samples from the chips' state at that point, resamples to 48 kHz and hands
+   the block to the kernel at once, which queues it and paces the emulation */
+static void (*s_audio_sink)(const int16_t *samples, unsigned frames, unsigned block);
+static unsigned s_audio_count;		/* frames produced since core_audio() */
+
+static void lr_audio_block(unsigned block)
 {
-	s_remainder += (double)lr_audio_rate / lr_fps;
+	s_remainder += (double)lr_audio_rate / lr_fps / 4.0;
 	unsigned frames = (unsigned)s_remainder;
 	s_remainder -= frames;
 	if (frames * 2 > SOUND_BUFFER_SIZE) { fatalerror("Audio buffer overflow"); return; }
@@ -485,6 +492,25 @@ void lr_audio_frame(void)
 	}
 	s_res_pos = pos;
 	s_out_frames = out;
+	s_audio_count += out;
+	if (s_audio_sink) s_audio_sink(s_out, out, block);
+}
+
+void lr_audio_frame(void)
+{
+	for (unsigned b = 0; b < 4; b++) lr_audio_block(b);
+}
+
+/* timer callback at lines 64, 128 and 192 (param 0-2) */
+void lr_sound_block(int param)
+{
+	lr_audio_block((unsigned)param);
+	if (param < 2) timer_set(SOUND_BLOCK, USECS_PER_SCANLINE * 64, param + 1, lr_sound_block);
+}
+
+void core_set_audio_callback(void (*callback)(const int16_t *samples, unsigned frames, unsigned block))
+{
+	s_audio_sink = callback;
 }
 
 /******************************************************************************
@@ -510,7 +536,7 @@ void lr_input_flags(uint8_t *f, unsigned player)
    frame (and as late as the board reads them). */
 void lr_vblank_input(void)
 {
-	lr_audio_frame();
+	lr_audio_block(3);		/* the last quarter of the frame's sound */
 	if (s_input_callback) s_input_callback();
 	update_inputport();
 }
@@ -674,8 +700,11 @@ int core_vertical(void) { return machine_screen_type != 0; }
 
 unsigned core_audio(const int16_t **samples)
 {
+	/* the last block, and the count produced since the previous call (the
+	   blocks go to the kernel's callback as they are made) */
 	*samples = s_out;
-	unsigned n = s_out_frames;
+	unsigned n = s_audio_count;
+	s_audio_count = 0;
 	s_out_frames = 0;
 	return n;
 }

@@ -1,21 +1,21 @@
 /*
  * neo-pi - HDMI audio output
  *
- * About 805 stereo frames at 48 kHz arrive per emulated frame (from the
- * resampler in njemu_pi.c). The display and the HDMI audio clock are not
- * exactly locked, so the queue level is kept around TARGET by stretching or
- * shrinking each block by a few samples (linear interpolation, inaudible).
+ * The emulated frame's sound arrives in four blocks of about 200 stereo
+ * frames at 48 kHz (from the resampler in njemu_pi.c), as the game loop
+ * paces the emulation through the frame. The display and the HDMI audio
+ * clock are not exactly locked, so the queue level is kept around a target
+ * by stretching or shrinking the blocks by a quarter of a percent (linear
+ * interpolation, inaudible); a full percent only when a gap is imminent.
  *
  * Latency: the DMA takes CHUNK_SIZE / 2 frames at a time, so the queue must
- * never hold less than that when a chunk is fetched; one frame of sound
- * (805) arrives at a time and is consumed over the frame, so the level
- * measured before a write is the low point of the cycle. A display frame
- * lost (a late vsync, a file written) costs another 805, and the queue must
- * absorb one of those without a gap and without a fast correction, which
- * detunes the music: TARGET = frame + frame + chunk and the strong
- * correction only near empty. About 35 ms from the chip to the HDMI output
- * (it was ~49 ms with 16 ms chunks); audio that late after the picture is
- * below what anyone can notice.
+ * never hold less than that when a chunk is fetched; between two writes it
+ * drains by the gap between them, so the level before a write is the low
+ * point and the target is the longest gap (measured by the game loop, which
+ * sets it) plus a chunk and a little. The level is judged on the lowest of
+ * the last four writes, a frame's worth, since the gaps within a frame are
+ * not equal. With the blocks paced, the target settles around 500-600
+ * frames: about 15 ms from the chip to the HDMI output.
  */
 #include "audio.h"
 #include <circle/util.h>
@@ -23,14 +23,17 @@
 #define SAMPLE_RATE	48000
 #define CHUNK_SIZE	(384 * 1)		// words per DMA chunk (multiple of 384): 192 frames, 4 ms
 #define QUEUE_FRAMES	4800			// 100 ms queue capacity
-#define TARGET_FRAMES	1500			// ~31 ms queued at the low point
-#define BAND_FRAMES	400
-#define STRONG_LOW	500			// below: 1% stretch (gap imminent)
-#define STRONG_HIGH	3500			// above: 1% shrink
+#define TARGET_FRAMES	1500			// until the game loop has measured its gaps
+#define BAND_FRAMES	100
+#define STRONG_LOW	280			// below: 1% stretch (gap imminent)
+#define STRONG_OVER	1000			// this much above the target: 1% shrink
 
 CAudioOut::CAudioOut (void)
 :	m_pSound (0),
 	m_bOK (FALSE),
+	m_nTarget (TARGET_FRAMES),
+	m_nRecent (0),
+	m_nAdjAccum (0),
 	m_nMinQueue (~0u),
 	m_nMaxQueue (0),
 	m_nUnderruns (0),
@@ -70,18 +73,27 @@ void CAudioOut::Prime (void)
 		return;
 	}
 	unsigned nQueued = m_pSound->GetQueueFramesAvail ();
-	if (nQueued >= TARGET_FRAMES)
+	if (nQueued >= m_nTarget)
 	{
 		return;
 	}
 	memset (m_Buffer, 0, sizeof m_Buffer);
-	unsigned nLeft = TARGET_FRAMES - nQueued;
+	unsigned nLeft = m_nTarget - nQueued;
 	while (nLeft > 0)
 	{
 		unsigned n = nLeft < 2048 ? nLeft : 2048;
 		m_pSound->Write (m_Buffer, n * 4);
 		nLeft -= n;
 	}
+	for (unsigned i = 0; i < 4; i++) m_Recent[i] = m_nTarget;
+	m_nAdjAccum = 0;
+}
+
+void CAudioOut::SetTarget (unsigned nFrames)
+{
+	if (nFrames < 300) nFrames = 300;
+	if (nFrames > 2400) nFrames = 2400;
+	m_nTarget = nFrames;
 }
 
 void CAudioOut::WriteFrame (const s16 *pSamples, unsigned nFrames)
@@ -98,23 +110,32 @@ void CAudioOut::WriteFrame (const s16 *pSamples, unsigned nFrames)
 	{
 		m_nUnderruns++;
 	}
+	m_Recent[m_nRecent++ & 3] = nQueued;
+	unsigned nLow = nQueued;
+	for (unsigned i = 0; i < 4; i++)
+	{
+		if (m_Recent[i] < nLow) nLow = m_Recent[i];
+	}
 
-	// correction: 0.25% of the block (inaudible) while the level is off the
-	// band, 1% only when a gap or an overflow is close; a lost display frame
-	// is thus recovered over a few seconds without a change of pitch
-	int nDelta = 0;
-	if (nQueued + BAND_FRAMES < TARGET_FRAMES)
+	// correction in 1/400 of the block: 1 = 0.25% (inaudible) while the low
+	// point is off the band, 4 = 1% only when a gap is imminent or the queue
+	// is far too full; carried between blocks so that small blocks get it too
+	int nRate = 0;
+	if (nLow + BAND_FRAMES < m_nTarget)
 	{
-		nDelta = nQueued < STRONG_LOW ? 8 : 2;			// stretch
+		nRate = nLow < STRONG_LOW ? 4 : 1;			// stretch
 	}
-	else if (nQueued > TARGET_FRAMES + BAND_FRAMES)
+	else if (nLow > m_nTarget + BAND_FRAMES)
 	{
-		nDelta = nQueued > STRONG_HIGH ? -8 : -2;		// shrink
+		nRate = nLow > m_nTarget + STRONG_OVER ? -4 : -1;	// shrink
 	}
+	m_nAdjAccum += (int) nFrames * nRate;
+	int nDelta = m_nAdjAccum / 400;
+	m_nAdjAccum -= nDelta * 400;
 	m_nAdjust += nDelta;
 
 	unsigned nOut = nFrames + nDelta;
-	if (nDelta == 0)
+	if (nDelta == 0 || nOut < 2)
 	{
 		m_pSound->Write (pSamples, nFrames * 4);
 		return;

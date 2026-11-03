@@ -133,6 +133,19 @@ static unsigned s_nLateHooks;		// frames whose picture was not ready by the samp
 static unsigned s_nMissUnexplained;	// vsyncs missed although the frame was ready in time
 static u32 s_HVSAtVSync[3], s_HVSAtSample[3];	// HVS channel status (diagnostic)
 static unsigned s_nReportLimit;		// frames per statistics window (short first window)
+// The sound comes in four blocks per frame (lines 64, 128, 192, vblank).
+// Each block's hook queues it and then holds the emulation until the block's
+// deadline, so that the blocks are spread through the real frame and the
+// audio queue can stay a few milliseconds deep; the deadlines come from the
+// slowest block, picture and draw of the last second, with room to spare.
+static unsigned s_BlockDeadline[3];	// us after the vsync; 0 = no pacing yet
+static unsigned s_tBlockStart;		// when the current block's emulation began
+static unsigned s_nBlockWorst;		// slowest of blocks 0-2 this second (us)
+static unsigned s_nLastBlockWorst;	// slowest block 3 with the picture this second (us)
+static unsigned s_nDrawWorst;		// slowest draw and flip this second (us)
+static unsigned s_tLastAudio;		// when the last block was queued
+static unsigned s_nGapMax, s_nGapMaxWin;	// longest wait between blocks (second, window)
+static unsigned s_nBlocksLate;		// blocks queued after their deadline (window)
 
 // pad bits -> core flags; while Select is held only the joystick goes through
 static u32 GameFlags (u32 n)
@@ -160,14 +173,15 @@ void CKernel::CoreVBlank (void)
 		return;
 	}
 	s_tEmuEnd = CTimer::GetClockTicks ();
+	unsigned nLastBlock = s_tEmuEnd - s_tBlockStart;	// block 3, picture included
+	if (nLastBlock > s_nLastBlockWorst) s_nLastBlockWorst = nLastBlock;
 
-	// the frame's sound and picture, out (the bands were drawn before the frame)
-	const int16_t *pAudio;
-	unsigned nAudio = core_audio (&pAudio);
-	m_Audio.WriteFrame (pAudio, nAudio);
+	// the picture, out (the sound went block by block, the bands were
+	// drawn before the frame)
 	m_Video.DrawGame (core_video (), core_flipped ());
 	m_Video.Flip ();
 	s_tFlip = CTimer::GetClockTicks ();
+	if (s_tFlip - s_tEmuEnd > s_nDrawWorst) s_nDrawWorst = s_tFlip - s_tEmuEnd;
 
 	// the controls, as late as the vsync allows
 	unsigned nTarget = s_nLastVSync + FRAME_US - s_nInputMargin;
@@ -206,6 +220,50 @@ void CKernel::CoreVBlank (void)
 static void CoreVBlankHook (void)
 {
 	CKernel::Get ()->CoreVBlank ();
+}
+
+void CKernel::CoreAudioBlock (const int16_t *pSamples, unsigned nFrames, unsigned nBlock)
+{
+	if (!s_bLateEnabled)
+	{
+		return;
+	}
+	unsigned now = CTimer::GetClockTicks ();
+	if (s_tLastAudio != 0)
+	{
+		unsigned nGap = now - s_tLastAudio;
+		if (nGap > s_nGapMax) s_nGapMax = nGap;
+		if (nGap > s_nGapMaxWin) s_nGapMaxWin = nGap;
+	}
+	s_tLastAudio = now;
+	m_Audio.WriteFrame (pSamples, nFrames);
+	if (nBlock >= 3)
+	{
+		return;			// CoreVBlank follows: the picture, then the controls
+	}
+	unsigned nBlockTime = now - s_tBlockStart;
+	if (nBlockTime > s_nBlockWorst) s_nBlockWorst = nBlockTime;
+
+	// hold the emulation until this block's deadline, so that the next
+	// block's sound is made when the queue needs it, not long before
+	unsigned nDeadline = s_BlockDeadline[nBlock];
+	if (nDeadline)
+	{
+		unsigned nTarget = s_nLastVSync + nDeadline;
+		if ((int) (CTimer::GetClockTicks () - nTarget) >= 0)
+		{
+			s_nBlocksLate++;
+		}
+		while ((int) (CTimer::GetClockTicks () - nTarget) < 0)
+		{
+		}
+	}
+	s_tBlockStart = CTimer::GetClockTicks ();
+}
+
+static void CoreAudioHook (const int16_t *pSamples, unsigned nFrames, unsigned nBlock)
+{
+	CKernel::Get ()->CoreAudioBlock (pSamples, nFrames, nBlock);
 }
 
 // ---- helpers --------------------------------------------------------------
@@ -365,7 +423,7 @@ CKernel::CKernel (void)
 	m_nFilter (FILTER_SCAN_MEDIUM),
 	m_bHVS (TRUE),
 	m_nAspect (ASPECT_43),
-	m_nInputMarginMin (2000),
+	m_nInputMarginMin (0),
 	m_bMultiCore (TRUE)
 {
 	s_pThis = this;
@@ -466,6 +524,7 @@ void CKernel::WriteTextFile (const char *pPath, const char *pText)
 	{
 		return;
 	}
+	m_Video.WaitForFileJob ();		// core 3 may be writing the log
 	FIL File;
 	if (f_open (&File, pPath, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK)
 	{
@@ -476,9 +535,10 @@ void CKernel::WriteTextFile (const char *pPath, const char *pText)
 	f_close (&File);
 }
 
-void CKernel::SaveLog (void)
+void CKernel::SaveLog (boolean bBackground)
 {
 	static char Text[MaxLines * (MaxLineLen + 2)];
+	m_Video.WaitForFileJob ();		// the buffer may still be being written
 	unsigned nFirst = m_nLines > MaxLines ? m_nLines - MaxLines : 0;
 	size_t nPos = 0;
 	for (unsigned i = nFirst; i < m_nLines; i++)
@@ -491,6 +551,10 @@ void CKernel::SaveLog (void)
 		Text[nPos++] = '\n';
 	}
 	Text[nPos] = '\0';
+	if (bBackground && m_bSDOK && m_Video.PostFileJob (LOG_PATH, Text, nPos))
+	{
+		return;				// core 3 writes it while the game goes on
+	}
 	WriteTextFile (LOG_PATH, Text);
 }
 
@@ -870,6 +934,7 @@ const char *CKernel::SaveScreenshot (void)
 	}
 	FIL File;
 	boolean bOK = FALSE;
+	m_Video.WaitForFileJob ();
 	if (f_open (&File, Path, FA_WRITE | FA_CREATE_ALWAYS) == FR_OK)
 	{
 		UINT nWritten = 0;
@@ -1146,16 +1211,21 @@ void CKernel::ReportWindow (boolean bFinal)
 		FormatMs (sa, sizeof sa, s_HistSlack.Avg ());
 		FormatMs (sm, sizeof sm, s_HistSlack.nMin == ~0u ? 0 : s_HistSlack.nMin);
 		snprintf (Line, sizeof Line,
-			  "   controls read %s/%s/%s ms before vsync avg/min/max (margin %u.%u, frame end after them %s max) | "
-			  "picture ready %s/%s ms before vsync avg/min",
-			  ma, mn, mx, s_nInputMargin / 1000, (s_nInputMargin % 1000) / 100, px, sa, sm);
+			  "   controls %s/%s/%s ms before vsync avg/min/max (margin %u.%u, after %s max) | "
+			  "picture %s/%s ms before | late %u, missed ready %u",
+			  ma, mn, mx, s_nInputMargin / 1000, (s_nInputMargin % 1000) / 100, px, sa, sm,
+			  s_nLateHooks, s_nMissUnexplained);
 		Log (Line, COLOR_TEXT);
+		char ga[16], d1[16], d2[16], d3[16];
+		FormatMs (ga, sizeof ga, s_nGapMaxWin);
+		FormatMs (d1, sizeof d1, s_BlockDeadline[0]);
+		FormatMs (d2, sizeof d2, s_BlockDeadline[1]);
+		FormatMs (d3, sizeof d3, s_BlockDeadline[2]);
 		snprintf (Line, sizeof Line,
-			  "   frames late for the controls %u, vsyncs missed with the frame ready %u | "
-			  "HVS at vsync 0:%08X 1:%08X 2:%08X, at controls 0:%08X 1:%08X 2:%08X",
-			  s_nLateHooks, s_nMissUnexplained,
-			  s_HVSAtVSync[0], s_HVSAtVSync[1], s_HVSAtVSync[2],
-			  s_HVSAtSample[0], s_HVSAtSample[1], s_HVSAtSample[2]);
+			  "   sound blocks: longest gap %s ms, deadlines %s/%s/%s ms, late %u, queue target %u | "
+			  "HVS %d: at vsync %08X, at controls %08X",
+			  ga, d1, d2, d3, s_nBlocksLate, m_Audio.GetTarget (), m_Video.GetHVSChannel (),
+			  s_HVSAtVSync[1], s_HVSAtSample[1]);
 		Log (Line, COLOR_TEXT);
 	}
 	if (s_HistLag.nCount > 0)
@@ -1181,7 +1251,7 @@ void CKernel::ReportWindow (boolean bFinal)
 	s_HistMargin.Reset ();
 	s_HistPost.Reset ();
 	s_nOverBudget = s_nMissedVSync = s_nWindowFrames = 0;
-	s_nLateHooks = s_nMissUnexplained = 0;
+	s_nLateHooks = s_nMissUnexplained = s_nBlocksLate = s_nGapMaxWin = 0;
 	s_nWindowStart = CTimer::GetClockTicks ();
 }
 
@@ -1279,8 +1349,9 @@ void CKernel::LoadConfig (void)
 	else if (strstr (Text, "aspect=4:3sharp"))	m_nAspect = ASPECT_43_SHARP;
 	else if (strstr (Text, "aspect=4:3"))		m_nAspect = ASPECT_43;
 	// inputmargin=N (milliseconds, one decimal allowed, e.g. 2.5): the
-	// controls are read at least this long before the vsync (2.0 unless
-	// set; it also grows by itself after vsyncs missed with the frame ready)
+	// controls are read at least this long before the vsync (unless set:
+	// 1.0 with the HVS line counter, 2.0 with the firmware's notification;
+	// it also grows by itself after vsyncs missed with the frame ready)
 	const char *pIM = strstr (Text, "inputmargin=");
 	if (pIM)
 	{
@@ -1297,9 +1368,13 @@ void CKernel::LoadConfig (void)
 	if (strstr (Text, "usbpoll=native"))	g_nUSBInterruptPollMs = 0;
 
 	char Line[140];
-	snprintf (Line, sizeof Line, "Settings: aspect %s, filter %s, input margin %u.%u ms, USB polling %s%s",
-		  AspectName (m_nAspect), FilterName (m_nFilter),
-		  m_nInputMarginMin / 1000, (m_nInputMarginMin % 1000) / 100,
+	char Margin[16] = "auto";
+	if (m_nInputMarginMin)
+	{
+		snprintf (Margin, sizeof Margin, "%u.%u ms", m_nInputMarginMin / 1000, (m_nInputMarginMin % 1000) / 100);
+	}
+	snprintf (Line, sizeof Line, "Settings: aspect %s, filter %s, input margin %s, USB polling %s%s",
+		  AspectName (m_nAspect), FilterName (m_nFilter), Margin,
 		  g_nUSBInterruptPollMs ? "1 ms" : "native", m_bMultiCore ? "" : ", multicore off");
 	Log (Line, COLOR_TEXT);
 }
@@ -1309,7 +1384,7 @@ void CKernel::SaveConfig (void)
 	char Text[240];
 	snprintf (Text, sizeof Text, "aspect=%s\r\nfilter=%s\r\n%s", AspectName (m_nAspect),
 		  FilterName (m_nFilter), m_bHVS ? "" : "scaler=cpu\r\n");
-	if (m_nInputMarginMin != 2000)
+	if (m_nInputMarginMin != 0)
 	{
 		char IM[32];
 		snprintf (IM, sizeof IM, "inputmargin=%u.%u\r\n", m_nInputMarginMin / 1000,
@@ -1728,7 +1803,7 @@ void CKernel::ResetGameStats (void)
 	s_HistPeriod.Reset (); s_HistLag.Reset (); s_HistSlack.Reset ();
 	s_HistMargin.Reset (); s_HistPost.Reset ();
 	s_nOverBudget = s_nMissedVSync = s_nWindowFrames = 0;
-	s_nLateHooks = s_nMissUnexplained = 0;
+	s_nLateHooks = s_nMissUnexplained = s_nBlocksLate = s_nGapMaxWin = 0;
 }
 
 // Credits over the paused game; 2 (or Esc) goes back to the game
@@ -1809,6 +1884,10 @@ void CKernel::RunGame (void)
 	s_nMarginBoost = 0;
 	s_nLastVSync = nLastVSync;
 	s_nReportLimit = 900;			// a first statistics window after 15 s, then per minute
+	for (unsigned b = 0; b < 3; b++) s_BlockDeadline[b] = 0;	// no pacing until measured
+	s_nBlockWorst = s_nLastBlockWorst = s_nDrawWorst = s_nGapMax = 0;
+	s_tLastAudio = 0;
+	m_Audio.SetTarget (1500);		// until the gaps between the blocks are measured
 	for (unsigned p = 0; p < CORE_MAX_PLAYERS; p++)
 	{
 		s_LateIgnore[p] = TRUE;
@@ -1880,6 +1959,8 @@ void CKernel::RunGame (void)
 				for (unsigned p = 0; p < CORE_MAX_PLAYERS; p++) nPrev[p] = ~0u;
 				unsigned nOld;
 				m_pInput->TakeChange (&nOld);	// presses during the set-up do not count
+				m_Audio.Prime ();		// the queue ran dry meanwhile
+				s_tLastAudio = 0;
 			}
 		}
 
@@ -1979,6 +2060,8 @@ void CKernel::RunGame (void)
 				nToast = 0;
 				nClearToast = m_nClearStatus = 2;
 				ResetGameStats ();
+				m_Audio.Prime ();
+				s_tLastAudio = 0;
 				continue;
 			}
 			if (bOpenMenu)
@@ -2004,7 +2087,8 @@ void CKernel::RunGame (void)
 					nToast = 60;
 				}
 				DrawBands ();
-				core_frame ();		// -> CoreVBlank: sound, picture, flip, wait, controls
+				s_tBlockStart = CTimer::GetClockTicks ();
+				core_frame ();		// -> CoreAudioBlock x4, CoreVBlank: picture, flip, wait, controls
 
 				if (core_fatal ())
 				{
@@ -2069,6 +2153,8 @@ void CKernel::RunGame (void)
 					bSelectCombo[p] = FALSE;
 				}
 				ResetGameStats ();
+				m_Audio.Prime ();	// the queue ran dry in the menu
+				s_tLastAudio = 0;
 			}
 
 			if (bMenu)
@@ -2164,7 +2250,7 @@ void CKernel::RunGame (void)
 				ReportWindow (FALSE);
 				m_pInput->FlushDiagnostics ();
 				s_nReportLimit = REPORT_FRAMES;
-				SaveLog ();		// the log survives a power cut (one write per minute)
+				SaveLog (TRUE);		// by core 3: the log survives a power cut, the game does not notice
 			}
 			// status line: the worst frame of the second
 			if (s_tFlip - t0 > nWorkMax)
@@ -2204,12 +2290,33 @@ void CKernel::RunGame (void)
 			// the controls as late as possible: twice the worst "after the
 			// controls" time of the second plus half a millisecond covers the
 			// handler's lines and the vsync's own jitter; never under the minimum
+			unsigned nMarginMin = m_nInputMarginMin ? m_nInputMarginMin
+					      : (m_Video.GetHVSChannel () >= 0 ? 1000 : 2000);
 			unsigned nMargin = nPostMax * 2 + 500;
-			if (nMargin < m_nInputMarginMin) nMargin = m_nInputMarginMin;
+			if (nMargin < nMarginMin) nMargin = nMarginMin;
 			nMargin += s_nMarginBoost;
 			if (nMargin > 5000) nMargin = 5000;
 			s_nInputMargin = nMargin;
 			nPostMax = 0;
+
+			// pacing of the sound blocks: the last block (with the picture)
+			// and the draw, at their slowest of this second and a quarter
+			// more, must end before the controls; the three earlier blocks
+			// are spread evenly up to that point
+			unsigned nTail = nMargin + 500 + (s_nDrawWorst + s_nLastBlockWorst) * 5 / 4;
+			unsigned nLast = FRAME_US > nTail ? FRAME_US - nTail : 0;
+			for (unsigned b = 0; b < 3; b++)
+			{
+				s_BlockDeadline[b] = nLast * (b + 1) / 3;
+			}
+			// the audio queue: the longest gap between blocks, a DMA chunk and a little
+			unsigned nNeed = (unsigned) ((u64) s_nGapMax * 48 / 1000) + 192 + 120;
+			unsigned nTargetNow = m_Audio.GetTarget ();
+			if (nNeed > nTargetNow + 40 || nNeed + 40 < nTargetNow)
+			{
+				m_Audio.SetTarget (nNeed);
+			}
+			s_nBlockWorst = s_nLastBlockWorst = s_nDrawWorst = s_nGapMax = 0;
 
 			m_CPUThrottle.Update ();
 			m_ActLED.On ();
@@ -2316,6 +2423,7 @@ TShutdownMode CKernel::Run (void)
 	}
 	s_pLateInput = m_pInput;
 	core_set_input_callback (CoreVBlankHook);
+	core_set_audio_callback (CoreAudioHook);
 
 	// last played game
 	unsigned nSel = 0;
@@ -2352,6 +2460,16 @@ TShutdownMode CKernel::Run (void)
 
 	// from here on the screen belongs to the UI
 	ApplyVideoMode ();
+	if (m_Video.ProbeHVS ())
+	{
+		snprintf (Line, sizeof Line, "VSync: HVS channel %d line counter (frame start = line 0)",
+			  m_Video.GetHVSChannel ());
+		Log (Line, COLOR_TEXT);
+	}
+	else
+	{
+		Log ("VSync: firmware notification (HVS line counter not found)", COLOR_ERR);
+	}
 	SaveLog ();
 	m_bQuiet = TRUE;
 

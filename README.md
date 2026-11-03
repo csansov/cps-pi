@@ -66,24 +66,30 @@ vblank callback order and the board's timing).
   Street Fighter II' and later, the QSound games, Pang! 3 ...), 10 MHz on
   the rest.
 - The board's input timing. The core's vblank callback hands the finished
-  picture and sound of the frame to the kernel *before* raising the
-  interrupt whose handler reads the input ports; the kernel flips the
-  picture, waits until the display's vsync is about two milliseconds away
-  (the margin adapts to what is measured), samples the pads at that moment
-  and only then lets the handler run. The
-  game reads controls as fresh as on the board (which reads its ports at
-  its own vblank, 1.4 ms before the next frame), the emulation of the next
-  frame starts right at the vsync, and nothing needs tuning: the slow part
-  of the frame runs first and the wait comes after it, whatever the frame
-  cost. Input to photon is the board's: the frame after the one being
+  picture of the frame to the kernel *before* raising the interrupt whose
+  handler reads the input ports; the kernel flips the picture, waits until
+  the display's next frame is about a millisecond away, samples the pads at
+  that moment and only then lets the handler run. The game reads controls
+  as fresh as on the board (which reads its ports at its own vblank), the
+  emulation of the next frame starts right at the vsync, and nothing needs
+  tuning. Input to photon is the board's: the frame after the one being
   scanned, plus the game's own latency.
+- The vsync is read from the HVS (the Pi's display composer): its line
+  counter says where the output is at any moment, so the kernel never
+  waits for a firmware notification and a frame that runs late just shows
+  one frame later instead of being lost. If the counter is not found, the
+  firmware's notification is used.
+- The frame's sound is rendered in four blocks (lines 64, 128, 192 and the
+  vblank) and the emulation is paced through the real frame so that each
+  block is made shortly before the HDMI output needs it: about 15 ms from
+  the chip to the output, a frame less than before, with a queue that
+  adapts to the measured gaps. The chips run at their native 44.1 kHz
+  (YM2151 + OKI) or 24 kHz (QSound) and are resampled to 48 kHz.
 - The four cores write the picture to the framebuffer (a quarter each),
   about 1.5 ms instead of 4.5 on a Pi 3; the core's own sprite renderer has
-  a 1:1 fast path for every tile and object.
-- HDMI audio at 48 kHz, about 35 ms from the chip to the output (a queue
-  that absorbs a lost display frame without a gap or a change of pitch);
-  the chips run at their native 44.1 kHz (YM2151 + OKI) or 24 kHz (QSound)
-  and are resampled.
+  a 1:1 fast path for every tile and object, which halved the emulation
+  time. Core 3 also writes the log in the background, so the game does not
+  lose a frame to the SD card.
 - USB gamepads (six buttons, Start, Select) and keyboard, USB polled every
   1 ms, per-model control set-up saved in `cpspi/pads.cfg`.
 - In-game menu (hold Select for a second, or Esc): reset, service menu (the
@@ -98,8 +104,8 @@ vblank callback order and the board's timing).
 - EEPROM contents saved in `cpspi/nvram`, diagnostics in `cpspi/LOG.TXT`,
   written after 15 s of play and then every minute (frame, render and draw
   times, how long before the vsync the controls were read, pad report to
-  game latency, audio queue), benchmark and sampling profiler with an empty
-  `cpspi/BENCH` file.
+  game latency, sound block pacing, audio queue), benchmark and sampling
+  profiler with an empty `cpspi/BENCH` file.
 
 Not yet: save states, DIP switch editor, vertical games drawn upright (they
 run, but sideways), Pi 4 kernel.

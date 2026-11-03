@@ -115,12 +115,23 @@ public:
 	unsigned GetBackBuffer (void) const	{ return m_nBack; }
 	void ShowBuffer (unsigned nBuffer);	// show a buffer now
 	boolean Flip (void);			// show back buffer, swap roles
+	// Blocks until the next frame begins: the HVS line counter of the HDMI
+	// channel wraps (after ProbeHVS), or the firmware's notification
 	boolean WaitForVSync (void);
-	// Raw status of an HVS display channel (0-2): bits 0-11 the line being
-	// composed, 12-17 a frame counter, 30-31 the mode (2 = running). A
-	// diagnostic for now: which channel is the HDMI output and where the
-	// firmware's vsync notification falls in the frame
+	// Looks for the HVS display channel whose line counter runs with the
+	// output (status register: bits 0-11 the line being composed, 12-17 a
+	// frame counter, 30-31 the mode, 2 running / 3 end of frame); TRUE =
+	// found, WaitForVSync() polls it from now on
+	boolean ProbeHVS (void);
+	int GetHVSChannel (void) const		{ return m_nHVSChannel; }
+	unsigned GetHVSLine (void) const	{ return ReadHVSStat (m_nHVSChannel >= 0 ? (unsigned) m_nHVSChannel : 1) & 0xFFF; }
 	u32 ReadHVSStat (unsigned nChannel) const;
+
+	// A file written by core 3 while core 0 plays (the log): the data must
+	// stay untouched until the job is done; any other file access from core 0
+	// must WaitForFileJob() first. FALSE = no cores (write it yourself)
+	boolean PostFileJob (const char *pPath, const char *pData, size_t nSize);
+	void WaitForFileJob (void);
 
 private:
 	boolean Allocate (unsigned nWidth, unsigned nHeight);
@@ -167,6 +178,7 @@ private:
 	unsigned m_nPixelOrder;			// reported by the firmware
 	boolean	 m_bRLow;			// red in the low byte of a pixel
 	class CDrawCores *m_pDrawCores;		// cores 1-3 drawing (0: core 0 alone)
+	int	 m_nHVSChannel;			// HVS channel polled for the vsync (-1: firmware)
 };
 
 #endif

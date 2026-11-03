@@ -49,11 +49,15 @@ public:
 	// Console (screen during boot + serial + LOG.TXT)
 	void Log (const char *pLine, u32 nColor);
 	void Fatal (int nCode, const char *pMessage);
-	void SaveLog (void);
+	// bBackground: written by core 3 while the game goes on
+	void SaveLog (boolean bBackground = FALSE);
 
-	// called by the core at its vblank (inside core_frame): picture and sound
-	// out, then the controls, as late as the vsync allows
+	// called by the core at its vblank (inside core_frame): picture out,
+	// then the controls, as late as the vsync allows
 	void CoreVBlank (void);
+	// called by the core with each quarter of the frame's sound: queues it
+	// and holds the emulation until the block's deadline
+	void CoreAudioBlock (const int16_t *pSamples, unsigned nFrames, unsigned nBlock);
 
 	static CKernel *Get (void) { return s_pThis; }
 
@@ -136,7 +140,7 @@ private:
 	unsigned		 m_nFilter;	// FILTER_*
 	boolean			 m_bHVS;		// FALSE: scaler=cpu in cpspi.cfg
 	unsigned		 m_nAspect;	// ASPECT_* (4:3, 4:3 sharp, square pixels)
-	unsigned		 m_nInputMarginMin;	// controls read at least this long before the vsync (us)
+	unsigned		 m_nInputMarginMin;	// controls read at least this long before the vsync (us; 0 = auto)
 	boolean			 m_bMultiCore;	// FALSE: multicore=off, core 0 draws alone
 
 	static CKernel		*s_pThis;

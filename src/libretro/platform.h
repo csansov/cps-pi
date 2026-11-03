@@ -29,6 +29,9 @@ void lr_vblank_input(void);
 /* cps-pi: around the rendering of the picture, to time it */
 void lr_render_begin(void);
 void lr_render_end(void);
+/* cps-pi: timer callback at lines 64, 128 and 192 (patches/njemu-sound-blocks.py):
+   a quarter of the frame's sound each; the vblank renders the last quarter */
+void lr_sound_block(int param);
 /* cps-pi: 68000 clock of the loaded game in Hz (10 or 12 MHz), see patches/njemu-cps1-timing.py */
 double lr_m68k_clock(void);
 extern unsigned lr_width, lr_height;
