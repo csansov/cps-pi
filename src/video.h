@@ -115,9 +115,12 @@ public:
 	unsigned GetBackBuffer (void) const	{ return m_nBack; }
 	void ShowBuffer (unsigned nBuffer);	// show a buffer now
 	boolean Flip (void);			// show back buffer, swap roles
-	// Blocks until the next frame begins: the HVS line counter of the HDMI
-	// channel wraps (after ProbeHVS), or the firmware's notification
-	boolean WaitForVSync (void);
+	// Blocks until the next frame begins: the HVS frame counter of the HDMI
+	// channel steps (after ProbeHVS), or the firmware's notification. With
+	// the HVS, a caller that arrives after a frame has already begun is not
+	// made to wait for the next one if that frame is still young: it
+	// returns at once with *pLateUs = how long ago the frame began
+	boolean WaitForVSync (unsigned *pLateUs = 0);
 	// Looks for the HVS display channel whose line counter runs with the
 	// output (status register: bits 0-11 the line being composed, 12-17 a
 	// frame counter, 30-31 the mode, 2 running / 3 end of frame); TRUE =
@@ -179,6 +182,11 @@ private:
 	boolean	 m_bRLow;			// red in the low byte of a pixel
 	class CDrawCores *m_pDrawCores;		// cores 1-3 drawing (0: core 0 alone)
 	int	 m_nHVSChannel;			// HVS channel polled for the vsync (-1: firmware)
+	unsigned m_nHVSCount;			// frame counter at the last return
+	boolean	 m_bHVSCountValid;
+	unsigned m_nFramePeriod;		// measured between frame starts (us)
+	unsigned m_nLastWrap;			// when the last polled frame start was seen
+	boolean	 m_bLastWrapPolled;
 };
 
 #endif

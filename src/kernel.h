@@ -111,7 +111,13 @@ private:
 	CInput			*m_pInput;
 	CUI			*m_pUI;
 
-	enum { MaxLines = 400, MaxLineLen = 140, MaxGames = 256 };
+	// the log keeps its first HeadLines lines (the boot) for good and the
+	// last MaxLines - HeadLines after them
+	enum { MaxLines = 800, HeadLines = 120, MaxLineLen = 140, MaxGames = 256 };
+	unsigned Slot (unsigned nLine) const
+	{
+		return nLine < HeadLines ? nLine : HeadLines + (nLine - HeadLines) % (MaxLines - HeadLines);
+	}
 
 	boolean			m_bVideoOK;
 	boolean			m_bSDOK;

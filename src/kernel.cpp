@@ -146,6 +146,8 @@ static unsigned s_nDrawWorst;		// slowest draw and flip this second (us)
 static unsigned s_tLastAudio;		// when the last block was queued
 static unsigned s_nGapMax, s_nGapMaxWin;	// longest wait between blocks (second, window)
 static unsigned s_nBlocksLate;		// blocks queued after their deadline (window)
+static unsigned s_nWaitUs;		// this frame's pacing waits (not emulation time)
+static unsigned s_nCarried;		// frames that began late and were carried on (window)
 
 // pad bits -> core flags; while Select is held only the joystick goes through
 static u32 GameFlags (u32 n)
@@ -259,6 +261,7 @@ void CKernel::CoreAudioBlock (const int16_t *pSamples, unsigned nFrames, unsigne
 		}
 	}
 	s_tBlockStart = CTimer::GetClockTicks ();
+	s_nWaitUs += s_tBlockStart - now;
 }
 
 static void CoreAudioHook (const int16_t *pSamples, unsigned nFrames, unsigned nBlock)
@@ -345,6 +348,7 @@ static THisto s_HistLag;		// pad report -> the vblank sample that used it
 static THisto s_HistSlack;		// frame ready (flip) -> vsync
 static THisto s_HistMargin;		// controls sampled -> vsync
 static THisto s_HistPost;		// controls sampled -> core_frame returned
+static THisto s_HistWait;		// pacing waits per frame (inside emu, taken out of it)
 static unsigned s_nOverBudget, s_nMissedVSync, s_nWindowFrames;
 static unsigned s_nWindowStart;
 
@@ -464,7 +468,7 @@ void CKernel::Log (const char *pLine, u32 nColor)
 	if (m_nLines > 0 && strcmp (pLine, m_LastRaw) == 0)
 	{
 		m_nRepeat++;
-		unsigned n = (m_nLines - 1) % MaxLines;
+		unsigned n = Slot (m_nLines - 1);
 		snprintf (m_Lines[n], MaxLineLen, "%s (x%u)", m_LastRaw, m_nRepeat);
 		if (!m_bQuiet && m_bVideoOK && !m_Video.IsGameMode () && m_nLines <= m_Video.GetRows ())
 		{
@@ -476,7 +480,7 @@ void CKernel::Log (const char *pLine, u32 nColor)
 	m_LastRaw[MaxLineLen - 1] = '\0';
 	m_nRepeat = 1;
 
-	unsigned n = m_nLines % MaxLines;
+	unsigned n = Slot (m_nLines);
 	strncpy (m_Lines[n], pLine, MaxLineLen - 1);
 	m_Lines[n][MaxLineLen - 1] = '\0';
 	m_LineColor[n] = nColor;
@@ -513,7 +517,7 @@ void CKernel::RedrawConsole (void)
 	m_Video.ClearRows (0, 0, nRows, RGB (0, 0, 0));
 	for (unsigned i = nFirst; i < m_nLines; i++)
 	{
-		unsigned n = i % MaxLines;
+		unsigned n = Slot (i);
 		m_Video.DrawText (0, 0, i - nFirst, m_Lines[n], m_LineColor[n], RGB (0, 0, 0));
 	}
 }
@@ -537,13 +541,20 @@ void CKernel::WriteTextFile (const char *pPath, const char *pText)
 
 void CKernel::SaveLog (boolean bBackground)
 {
-	static char Text[MaxLines * (MaxLineLen + 2)];
+	static char Text[MaxLines * (MaxLineLen + 2) + 80];
 	m_Video.WaitForFileJob ();		// the buffer may still be being written
-	unsigned nFirst = m_nLines > MaxLines ? m_nLines - MaxLines : 0;
+	// the head, a note on what was not kept, then the tail
+	const unsigned nRing = MaxLines - HeadLines;
+	unsigned nTailFirst = m_nLines > HeadLines + nRing ? m_nLines - nRing : HeadLines;
 	size_t nPos = 0;
-	for (unsigned i = nFirst; i < m_nLines; i++)
+	for (unsigned i = 0; i < m_nLines; i++)
 	{
-		const char *pLine = m_Lines[i % MaxLines];
+		if (i == HeadLines && nTailFirst > HeadLines)
+		{
+			nPos += snprintf (Text + nPos, 80, "(... %u lines not kept ...)\r\n", nTailFirst - HeadLines);
+			i = nTailFirst;
+		}
+		const char *pLine = m_Lines[Slot (i)];
 		size_t nLen = strlen (pLine);
 		memcpy (Text + nPos, pLine, nLen);
 		nPos += nLen;
@@ -1211,21 +1222,22 @@ void CKernel::ReportWindow (boolean bFinal)
 		FormatMs (sa, sizeof sa, s_HistSlack.Avg ());
 		FormatMs (sm, sizeof sm, s_HistSlack.nMin == ~0u ? 0 : s_HistSlack.nMin);
 		snprintf (Line, sizeof Line,
-			  "   controls %s/%s/%s ms before vsync avg/min/max (margin %u.%u, after %s max) | "
-			  "picture %s/%s ms before | late %u, missed ready %u",
+			  "   controls %s/%s/%s ms before vsync (margin %u.%u, after %s) | "
+			  "picture %s/%s ms before | late %u, carried %u, missed ready %u",
 			  ma, mn, mx, s_nInputMargin / 1000, (s_nInputMargin % 1000) / 100, px, sa, sm,
-			  s_nLateHooks, s_nMissUnexplained);
+			  s_nLateHooks, s_nCarried, s_nMissUnexplained);
 		Log (Line, COLOR_TEXT);
-		char ga[16], d1[16], d2[16], d3[16];
+		char ga[16], d1[16], d2[16], d3[16], wa[16];
 		FormatMs (ga, sizeof ga, s_nGapMaxWin);
 		FormatMs (d1, sizeof d1, s_BlockDeadline[0]);
 		FormatMs (d2, sizeof d2, s_BlockDeadline[1]);
 		FormatMs (d3, sizeof d3, s_BlockDeadline[2]);
+		FormatMs (wa, sizeof wa, s_HistWait.Avg ());
 		snprintf (Line, sizeof Line,
-			  "   sound blocks: longest gap %s ms, deadlines %s/%s/%s ms, late %u, queue target %u | "
-			  "HVS %d: at vsync %08X, at controls %08X",
-			  ga, d1, d2, d3, s_nBlocksLate, m_Audio.GetTarget (), m_Video.GetHVSChannel (),
-			  s_HVSAtVSync[1], s_HVSAtSample[1]);
+			  "   sound: gap %s ms max, deadlines %s/%s/%s, late %u, queue %u | waits %s ms avg | "
+			  "HVS ch %d, line %u at controls",
+			  ga, d1, d2, d3, s_nBlocksLate, m_Audio.GetTarget (), wa, m_Video.GetHVSChannel (),
+			  s_HVSAtSample[1] & 0xFFF);
 		Log (Line, COLOR_TEXT);
 	}
 	if (s_HistLag.nCount > 0)
@@ -1250,8 +1262,9 @@ void CKernel::ReportWindow (boolean bFinal)
 	s_HistSlack.Reset ();
 	s_HistMargin.Reset ();
 	s_HistPost.Reset ();
+	s_HistWait.Reset ();
 	s_nOverBudget = s_nMissedVSync = s_nWindowFrames = 0;
-	s_nLateHooks = s_nMissUnexplained = s_nBlocksLate = s_nGapMaxWin = 0;
+	s_nLateHooks = s_nMissUnexplained = s_nBlocksLate = s_nGapMaxWin = s_nCarried = 0;
 	s_nWindowStart = CTimer::GetClockTicks ();
 }
 
@@ -1801,9 +1814,9 @@ void CKernel::ResetGameStats (void)
 	s_nWindowStart = CTimer::GetClockTicks ();
 	s_HistEmu.Reset (); s_HistRender.Reset (); s_HistWork.Reset (); s_HistDraw.Reset ();
 	s_HistPeriod.Reset (); s_HistLag.Reset (); s_HistSlack.Reset ();
-	s_HistMargin.Reset (); s_HistPost.Reset ();
+	s_HistMargin.Reset (); s_HistPost.Reset (); s_HistWait.Reset ();
 	s_nOverBudget = s_nMissedVSync = s_nWindowFrames = 0;
-	s_nLateHooks = s_nMissUnexplained = s_nBlocksLate = s_nGapMaxWin = 0;
+	s_nLateHooks = s_nMissUnexplained = s_nBlocksLate = s_nGapMaxWin = s_nCarried = 0;
 }
 
 // Credits over the paused game; 2 (or Esc) goes back to the game
@@ -2088,6 +2101,7 @@ void CKernel::RunGame (void)
 				}
 				DrawBands ();
 				s_tBlockStart = CTimer::GetClockTicks ();
+				s_nWaitUs = 0;
 				core_frame ();		// -> CoreAudioBlock x4, CoreVBlank: picture, flip, wait, controls
 
 				if (core_fatal ())
@@ -2191,9 +2205,10 @@ void CKernel::RunGame (void)
 		}
 		unsigned tRet = CTimer::GetClockTicks ();
 
+		unsigned nLate = 0;		// the frame began this long ago (HVS: carried on, not lost)
 		if (m_bVSync)
 		{
-			m_Video.WaitForVSync ();
+			m_Video.WaitForVSync (&nLate);
 		}
 		else
 		{
@@ -2202,7 +2217,7 @@ void CKernel::RunGame (void)
 			}
 			nNextDeadline += FRAME_US;
 		}
-		unsigned t4 = CTimer::GetClockTicks ();
+		unsigned t4 = CTimer::GetClockTicks () - nLate;	// when the frame began
 		for (unsigned c = 0; c < 3; c++)
 		{
 			s_HVSAtVSync[c] = m_Video.ReadHVSStat (c);
@@ -2216,6 +2231,10 @@ void CKernel::RunGame (void)
 		if (s_bPresented)
 		{
 			unsigned nPost = tRet - s_tSample;		// handler lines + return, after the controls
+			if (nLate)
+			{
+				s_nCarried++;
+			}
 			if (nPeriod > 25000 && (int) (s_tFlip - (nPredicted - s_nInputMargin)) <= 0)
 			{
 				// the picture was ready and the controls read in time, yet the
@@ -2227,13 +2246,15 @@ void CKernel::RunGame (void)
 					s_nInputMargin += 500;
 				}
 			}
-			s_HistEmu.Add (s_tEmuEnd - t0);
+			unsigned nWait = s_nWaitUs < s_tEmuEnd - t0 ? s_nWaitUs : 0;
+			s_HistEmu.Add (s_tEmuEnd - t0 - nWait);	// without the pacing waits
 			s_HistRender.Add (core_render_us ());
-			s_HistWork.Add (s_tFlip - t0);
+			s_HistWork.Add (s_tFlip - t0 - nWait);
 			s_HistDraw.Add (s_tFlip - s_tEmuEnd);
+			s_HistWait.Add (nWait);
 			s_HistPeriod.Add (nPeriod);
-			s_HistSlack.Add (t4 - s_tFlip);
-			s_HistMargin.Add (t4 - s_tSample);
+			s_HistSlack.Add ((int) (t4 - s_tFlip) > 0 ? t4 - s_tFlip : 0);
+			s_HistMargin.Add ((int) (t4 - s_tSample) > 0 ? t4 - s_tSample : 0);
 			s_HistPost.Add (nPost);
 			if (nPost > nPostMax) nPostMax = nPost;
 			if (s_bLateChange)
@@ -2242,7 +2263,7 @@ void CKernel::RunGame (void)
 				s_HistLag.Add (s_tSample - s_nLateChangeTicks);
 				s_bLateChange = FALSE;
 			}
-			if (s_tFlip - t0 > 16000) s_nOverBudget++;
+			if (s_tFlip - t0 - nWait > 16000) s_nOverBudget++;
 			if (nPeriod > 25000) s_nMissedVSync++;
 			s_nWindowFrames++;
 			if (s_nWindowFrames >= s_nReportLimit)
@@ -2252,10 +2273,10 @@ void CKernel::RunGame (void)
 				s_nReportLimit = REPORT_FRAMES;
 				SaveLog (TRUE);		// by core 3: the log survives a power cut, the game does not notice
 			}
-			// status line: the worst frame of the second
-			if (s_tFlip - t0 > nWorkMax)
+			// status line: the worst frame of the second (emulation and draw, not the waits)
+			if (s_tFlip - t0 - nWait > nWorkMax)
 			{
-				nWorkMax = s_tFlip - t0;
+				nWorkMax = s_tFlip - t0 - nWait;
 			}
 		}
 

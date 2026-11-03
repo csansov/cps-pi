@@ -270,7 +270,12 @@ CVideoOut::CVideoOut (void)
 	m_nPixelOrder (1),
 	m_bRLow (TRUE),
 	m_pDrawCores (0),
-	m_nHVSChannel (-1)
+	m_nHVSChannel (-1),
+	m_nHVSCount (0),
+	m_bHVSCountValid (FALSE),
+	m_nFramePeriod (16768),
+	m_nLastWrap (0),
+	m_bLastWrapPolled (FALSE)
 {
 }
 
@@ -840,22 +845,52 @@ boolean CVideoOut::Flip (void)
 	return bOK;
 }
 
-boolean CVideoOut::WaitForVSync (void)
+boolean CVideoOut::WaitForVSync (unsigned *pLateUs)
 {
+	if (pLateUs)
+	{
+		*pLateUs = 0;
+	}
 	if (m_nHVSChannel >= 0)
 	{
-		// the line being composed climbs through the frame and holds at the
-		// last one during the blanking; the drop is the start of the next frame
+		// the frame counter (bits 12-17 of the status) steps at the start
+		// of every frame; the line (bits 0-11) says how far that frame is
+		u32 nStat = ReadHVSStat ((unsigned) m_nHVSChannel);
+		unsigned nCount = (nStat >> 12) & 0x3F, nLine = nStat & 0xFFF;
+		unsigned nTotal = m_nDispH + (m_nDispH >= 1080 ? 45 : 30);	// with the blanking lines
+		if (m_bHVSCountValid && nCount != m_nHVSCount && nLine < nTotal * 6 / 10)
+		{
+			// a frame began since the last wait: the caller is late, but the
+			// frame is young, so carry on with it instead of losing a whole one
+			m_nHVSCount = nCount;
+			m_bLastWrapPolled = FALSE;
+			if (pLateUs)
+			{
+				*pLateUs = (unsigned) ((u64) m_nFramePeriod * nLine / nTotal);
+			}
+			return TRUE;
+		}
 		unsigned nStart = CTimer::GetClockTicks ();
-		unsigned nPrev = GetHVSLine ();
 		while (CTimer::GetClockTicks () - nStart < 40000)
 		{
-			unsigned nLine = GetHVSLine ();
-			if (nLine < nPrev)
+			unsigned nNow = (ReadHVSStat ((unsigned) m_nHVSChannel) >> 12) & 0x3F;
+			if (nNow != nCount)
 			{
+				unsigned nTicks = CTimer::GetClockTicks ();
+				if (m_bLastWrapPolled)
+				{
+					unsigned nPeriod = nTicks - m_nLastWrap;
+					if (nPeriod > 15000 && nPeriod < 18500)
+					{
+						m_nFramePeriod = (m_nFramePeriod * 7 + nPeriod) / 8;
+					}
+				}
+				m_nLastWrap = nTicks;
+				m_bLastWrapPolled = TRUE;
+				m_nHVSCount = nNow;
+				m_bHVSCountValid = TRUE;
 				return TRUE;
 			}
-			nPrev = nLine;
 		}
 		m_nHVSChannel = -1;		// the counter stopped: the firmware from now on
 	}
