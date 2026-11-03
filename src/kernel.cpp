@@ -1893,14 +1893,17 @@ void CKernel::RunGame (void)
 
 	// the controls go in at the core's vblank (CoreVBlank), as late before
 	// the vsync as the margin allows: start cautious, then from what is measured
-	s_nInputMargin = m_nInputMarginMin > 3000 ? m_nInputMarginMin : 3000;
+	s_nInputMargin = m_nInputMarginMin > 2000 ? m_nInputMarginMin : 2000;
 	s_nMarginBoost = 0;
 	s_nLastVSync = nLastVSync;
 	s_nReportLimit = 900;			// a first statistics window after 15 s, then per minute
-	for (unsigned b = 0; b < 3; b++) s_BlockDeadline[b] = 0;	// no pacing until measured
+	// pacing and queue from the first frame, with what a Pi 3 settles at (a
+	// 1080p frame of 16.8 ms: blocks at 3.1, 6.2 and 9.3 ms, a queue of
+	// 600 frames); measured and corrected after the first second
+	for (unsigned b = 0; b < 3; b++) s_BlockDeadline[b] = 3100 * (b + 1);
 	s_nBlockWorst = s_nLastBlockWorst = s_nDrawWorst = s_nGapMax = 0;
 	s_tLastAudio = 0;
-	m_Audio.SetTarget (1500);		// until the gaps between the blocks are measured
+	m_Audio.SetTarget (700);
 	for (unsigned p = 0; p < CORE_MAX_PLAYERS; p++)
 	{
 		s_LateIgnore[p] = TRUE;

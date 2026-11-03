@@ -857,8 +857,11 @@ boolean CVideoOut::WaitForVSync (unsigned *pLateUs)
 		// of every frame; the line (bits 0-11) says how far that frame is
 		u32 nStat = ReadHVSStat ((unsigned) m_nHVSChannel);
 		unsigned nCount = (nStat >> 12) & 0x3F, nLine = nStat & 0xFFF;
-		unsigned nTotal = m_nDispH + (m_nDispH >= 1080 ? 45 : 30);	// with the blanking lines
-		if (m_bHVSCountValid && nCount != m_nHVSCount && nLine < nTotal * 6 / 10)
+		// the composer paces itself to the output: its line counter climbs
+		// through the display's lines over the whole frame period (measured:
+		// line 1019 of 1080 one millisecond before the next frame at 1080p)
+		unsigned nLines = m_nDispH ? m_nDispH : 1;
+		if (m_bHVSCountValid && nCount != m_nHVSCount && nLine < nLines * 6 / 10)
 		{
 			// a frame began since the last wait: the caller is late, but the
 			// frame is young, so carry on with it instead of losing a whole one
@@ -866,7 +869,7 @@ boolean CVideoOut::WaitForVSync (unsigned *pLateUs)
 			m_bLastWrapPolled = FALSE;
 			if (pLateUs)
 			{
-				*pLateUs = (unsigned) ((u64) m_nFramePeriod * nLine / nTotal);
+				*pLateUs = (unsigned) ((u64) m_nFramePeriod * nLine / nLines);
 			}
 			return TRUE;
 		}
