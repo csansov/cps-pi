@@ -96,11 +96,17 @@ vblank callback order and the board's timing).
   TEST switch: DIP switches and board tests), game list, power off. Select+1
   takes a screenshot, Select+2 shows the status line (FPS, load, temperature),
   Select+3 the credits. A short Select press inserts a coin.
+- A bezel around the picture: `cpspi/overlay.png`, an 8 bit RGB or RGBA PNG
+  the size of the display (scaled if not), shown wherever the game picture
+  is not. The one shipped (`dist/sd/cpspi/overlay.png`, carbon texture,
+  Capcom Play System panels and a gold frame) is composed by
+  `tools/make_overlay.py` from `art/overlay-source.jpg` for the 1080p
+  layout; drop in any other picture, or `overlay=off` for black.
 - OPTIONS from the game list (button 4): picture 4:3 or pixel, scanlines,
-  controls, power off; saved in `cpspi/cpspi.cfg` (`aspect=`, `filter=`,
-  `scaler=cpu`, `usbpoll=native`; by hand: `inputmargin=2.5` to read the
-  controls earlier before the vsync, `multicore=off` to draw on core 0
-  alone).
+  overlay on or off, controls, power off; saved in `cpspi/cpspi.cfg`
+  (`aspect=`, `filter=`, `overlay=off`, `scaler=cpu`, `usbpoll=native`; by
+  hand: `inputmargin=2.5` to read the controls earlier before the vsync,
+  `multicore=off` to draw on core 0 alone).
 - EEPROM contents saved in `cpspi/nvram`, diagnostics in `cpspi/LOG.TXT`,
   written after 15 s of play and then every minute (frame, render and draw
   times, how long before the vsync the controls were read, pad report to

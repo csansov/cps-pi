@@ -136,9 +136,19 @@ public:
 	boolean PostFileJob (const char *pPath, const char *pData, size_t nSize);
 	void WaitForFileJob (void);
 
+	// Overlay: an RGB picture (3 bytes per pixel, kept by the caller),
+	// ideally the display's size, shown around the game picture in game
+	// mode (a bezel); the area under the picture is never used
+	void SetOverlay (const u8 *pRGB, unsigned nWidth, unsigned nHeight);
+	void EnableOverlay (boolean bEnable);
+	boolean HasOverlay (void) const		{ return m_pOverlaySrc != 0; }
+	boolean IsOverlayOn (void) const	{ return m_bOverlay && m_pOverlaySrc != 0; }
+
 private:
 	boolean Allocate (unsigned nWidth, unsigned nHeight);
 	void BuildLUT (void);
+	void BuildOverlay (void);		// the overlay at the framebuffer's size
+	void FillBorders (void);		// both buffers outside the picture: overlay or black
 	u32 *Row (unsigned nBuffer, unsigned nY) const
 	{
 		return m_pBase + (nBuffer * m_nHeight + nY) * m_nPitchPx;
@@ -166,6 +176,7 @@ private:
 	unsigned m_nScreenW;			// picture width on screen
 	unsigned m_nFilter;
 	unsigned m_nGameX, m_nGameY;		// game rectangle in the framebuffer
+	unsigned m_nGameW, m_nGameH;
 	unsigned m_nStatusY;
 	unsigned m_nStatusScale;
 	unsigned m_nTopY;
@@ -187,6 +198,11 @@ private:
 	unsigned m_nFramePeriod;		// measured between frame starts (us)
 	unsigned m_nLastWrap;			// when the last polled frame start was seen
 	boolean	 m_bLastWrapPolled;
+	const u8 *m_pOverlaySrc;		// RGB, the caller's
+	unsigned m_nOverlayW, m_nOverlayH;
+	boolean	 m_bOverlay;
+	u32	*m_pOverlayFb;			// at the framebuffer's size, native pixels
+	unsigned m_nOverlayFbW, m_nOverlayFbH;
 };
 
 #endif

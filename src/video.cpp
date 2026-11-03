@@ -261,6 +261,8 @@ CVideoOut::CVideoOut (void)
 	m_nFilter (FILTER_NONE),
 	m_nGameX (0),
 	m_nGameY (0),
+	m_nGameW (0),
+	m_nGameH (0),
 	m_nStatusY (0),
 	m_nStatusScale (1),
 	m_nTopY (0),
@@ -275,8 +277,121 @@ CVideoOut::CVideoOut (void)
 	m_bHVSCountValid (FALSE),
 	m_nFramePeriod (16768),
 	m_nLastWrap (0),
-	m_bLastWrapPolled (FALSE)
+	m_bLastWrapPolled (FALSE),
+	m_pOverlaySrc (0),
+	m_nOverlayW (0),
+	m_nOverlayH (0),
+	m_bOverlay (TRUE),
+	m_pOverlayFb (0),
+	m_nOverlayFbW (0),
+	m_nOverlayFbH (0)
 {
+}
+
+void CVideoOut::SetOverlay (const u8 *pRGB, unsigned nWidth, unsigned nHeight)
+{
+	m_pOverlaySrc = pRGB;
+	m_nOverlayW = nWidth;
+	m_nOverlayH = nHeight;
+	if (m_bGameMode)
+	{
+		BuildOverlay ();
+		FillBorders ();
+	}
+}
+
+void CVideoOut::EnableOverlay (boolean bEnable)
+{
+	m_bOverlay = bEnable;
+	if (m_bGameMode)
+	{
+		FillBorders ();
+	}
+}
+
+// the overlay scaled to the framebuffer (each pixel the average of its block
+// of source pixels: at 1080p with the HVS doubling, 2x2) in native pixels
+void CVideoOut::BuildOverlay (void)
+{
+	if (m_pOverlaySrc == 0 || m_nWidth == 0 || m_nHeight == 0)
+	{
+		return;
+	}
+	if (m_pOverlayFb == 0 || m_nOverlayFbW != m_nWidth || m_nOverlayFbH != m_nHeight)
+	{
+		delete [] m_pOverlayFb;
+		m_pOverlayFb = new u32[m_nWidth * m_nHeight];
+		if (m_pOverlayFb == 0)
+		{
+			return;
+		}
+		m_nOverlayFbW = m_nWidth;
+		m_nOverlayFbH = m_nHeight;
+	}
+	for (unsigned y = 0; y < m_nHeight; y++)
+	{
+		unsigned sy0 = (unsigned) ((u64) y * m_nOverlayH / m_nHeight);
+		unsigned sy1 = (unsigned) ((u64) (y + 1) * m_nOverlayH / m_nHeight);
+		if (sy1 <= sy0) sy1 = sy0 + 1;
+		if (sy1 > m_nOverlayH) sy1 = m_nOverlayH;
+		u32 *pDst = m_pOverlayFb + y * m_nWidth;
+		for (unsigned x = 0; x < m_nWidth; x++)
+		{
+			unsigned sx0 = (unsigned) ((u64) x * m_nOverlayW / m_nWidth);
+			unsigned sx1 = (unsigned) ((u64) (x + 1) * m_nOverlayW / m_nWidth);
+			if (sx1 <= sx0) sx1 = sx0 + 1;
+			if (sx1 > m_nOverlayW) sx1 = m_nOverlayW;
+			unsigned r = 0, g = 0, b = 0, n = 0;
+			for (unsigned sy = sy0; sy < sy1; sy++)
+			{
+				const u8 *pSrc = m_pOverlaySrc + ((size_t) sy * m_nOverlayW + sx0) * 3;
+				for (unsigned sx = sx0; sx < sx1; sx++, pSrc += 3)
+				{
+					r += pSrc[0];
+					g += pSrc[1];
+					b += pSrc[2];
+					n++;
+				}
+			}
+			pDst[x] = n ? Native (RGB (r / n, g / n, b / n)) : 0xFF000000u;
+		}
+	}
+}
+
+// everything outside the picture, in both buffers: the overlay, or black
+void CVideoOut::FillBorders (void)
+{
+	const boolean bOverlay = m_bOverlay && m_pOverlayFb != 0 && m_nOverlayFbW == m_nWidth
+				 && m_nOverlayFbH == m_nHeight;
+	const unsigned x0 = m_nGameX, x1 = m_nGameX + m_nGameW;
+	const unsigned y0 = m_nGameY, y1 = m_nGameY + m_nGameH;
+	for (unsigned nBuffer = 0; nBuffer < 2; nBuffer++)
+	{
+		for (unsigned y = 0; y < m_nHeight; y++)
+		{
+			u32 *p = Row (nBuffer, y);
+			const u32 *pOv = bOverlay ? m_pOverlayFb + y * m_nWidth : 0;
+			if (y < y0 || y >= y1)
+			{
+				if (pOv) memcpy (p, pOv, m_nWidth * 4);
+				else for (unsigned x = 0; x < m_nWidth; x++) p[x] = 0xFF000000u;
+			}
+			else
+			{
+				if (pOv)
+				{
+					memcpy (p, pOv, x0 * 4);
+					memcpy (p + x1, pOv + x1, (m_nWidth - x1) * 4);
+				}
+				else
+				{
+					for (unsigned x = 0; x < x0; x++) p[x] = 0xFF000000u;
+					for (unsigned x = x1; x < m_nWidth; x++) p[x] = 0xFF000000u;
+				}
+			}
+		}
+	}
+	DataSyncBarrier ();
 }
 
 boolean CVideoOut::PostFileJob (const char *pPath, const char *pData, size_t nSize)
@@ -516,6 +631,8 @@ boolean CVideoOut::SetGameMode (unsigned nFilter, boolean bAllowHVS, unsigned nA
 	unsigned nGameW = nFbGameW, nGameH = GAME_H * m_nM;
 	m_nGameX = ((m_nWidth - nGameW) / 2) & ~3u;	// 16 byte aligned rows for the copies
 	m_nGameY = (m_nHeight - nGameH) / 2;
+	m_nGameW = nGameW;
+	m_nGameH = nGameH;
 
 	// text in the black bands: 8x8 menu font, 16 px high on screen where possible
 	m_nStatusScale = m_nK >= 2 ? 1 : 2;
@@ -525,6 +642,8 @@ boolean CVideoOut::SetGameMode (unsigned nFilter, boolean bAllowHVS, unsigned nA
 	m_nTopY = m_nGameY > nTextH ? (m_nGameY - nTextH) / 2 : 0;
 
 	m_bGameMode = TRUE;
+	BuildOverlay ();
+	FillBorders ();
 	return TRUE;
 }
 
@@ -757,17 +876,26 @@ void CVideoOut::DrawBandText (boolean bTop, const TTextSpan *pSpans, unsigned nS
 	const unsigned nY = bTop ? m_nTopY : m_nStatusY;
 	const unsigned nH = 9 * S;					// glyph + shadow
 
+	const boolean bOverlay = IsOverlayOn () && m_pOverlayFb != 0 && m_nOverlayFbW == m_nWidth
+				 && m_nOverlayFbH == m_nHeight;
 	for (unsigned y = nY; y < nY + nH && y < m_nHeight; y++)
 	{
 		u32 *p = Row (m_nBack, y);
-		if (y >= m_nGameY && y < m_nHeight - m_nGameY)
+		if (y >= m_nGameY && y < m_nGameY + m_nGameH)
 		{
-			// never inside the picture: clear only the side bands
+			// never inside the picture
 			continue;
 		}
-		for (unsigned x = 0; x < m_nWidth; x++)
+		if (bOverlay)
 		{
-			p[x] = 0xFF000000u;
+			memcpy (p, m_pOverlayFb + y * m_nWidth, m_nWidth * 4);	// the bezel back
+		}
+		else
+		{
+			for (unsigned x = 0; x < m_nWidth; x++)
+			{
+				p[x] = 0xFF000000u;
+			}
 		}
 	}
 

@@ -83,6 +83,7 @@ private:
 	static const char *FilterShort (unsigned nFilter);
 	void LoadConfig (void);
 	void SaveConfig (void);
+	void LoadOverlay (void);
 	void RunSystemMenu (void);
 	boolean PowerOffCountdown (void);
 	void LoadPads (void);
@@ -148,6 +149,8 @@ private:
 	unsigned		 m_nAspect;	// ASPECT_* (4:3, 4:3 sharp, square pixels)
 	unsigned		 m_nInputMarginMin;	// controls read at least this long before the vsync (us; 0 = auto)
 	boolean			 m_bMultiCore;	// FALSE: multicore=off, core 0 draws alone
+	boolean			 m_bOverlay;	// the bezel (cpspi/overlay.png) around the picture
+	u8			*m_pOverlayRGB;	// the decoded bezel
 
 	static CKernel		*s_pThis;
 };

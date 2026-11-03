@@ -21,6 +21,8 @@ int snprintf (char *pBuffer, size_t nSize, const char *pFormat, ...);
 int vsnprintf (char *pBuffer, size_t nSize, const char *pFormat, va_list Args);
 void *cpspi_png_encode (const void *pRGB, int nWidth, int nHeight, size_t *pSize);
 void cpspi_png_free (void *p);
+uint8_t *cpspi_png_decode (const void *pData, size_t nSize, unsigned *pWidth, unsigned *pHeight);
+void cpspi_png_free_rgb (void *p);
 }
 
 #define CPSPI_DIR	"SD:/cpspi"
@@ -36,6 +38,7 @@ void cpspi_png_free (void *p);
 #define LAST_PATH	CPSPI_DIR "/LAST.TXT"
 #define CFG_PATH	CPSPI_DIR "/cpspi.cfg"
 #define PADS_PATH	CPSPI_DIR "/pads.cfg"
+#define OVERLAY_PATH	CPSPI_DIR "/overlay.png"
 
 #ifndef BENCH_WARMUP
 #define BENCH_WARMUP	1800		// 30 s of play before measuring
@@ -428,7 +431,9 @@ CKernel::CKernel (void)
 	m_bHVS (TRUE),
 	m_nAspect (ASPECT_43),
 	m_nInputMarginMin (0),
-	m_bMultiCore (TRUE)
+	m_bMultiCore (TRUE),
+	m_bOverlay (TRUE),
+	m_pOverlayRGB (0)
 {
 	s_pThis = this;
 	m_LastRaw[0] = '\0';
@@ -1376,6 +1381,8 @@ void CKernel::LoadConfig (void)
 	}
 	// multicore=off: core 0 draws the picture alone (cores 1-3 not started)
 	if (strstr (Text, "multicore=off"))	m_bMultiCore = FALSE;
+	// overlay=off: black around the picture even if cpspi/overlay.png exists
+	if (strstr (Text, "overlay=off"))	m_bOverlay = FALSE;
 	// USB pads are polled every 1 ms (like usbhid.jspoll=1 on Linux);
 	// usbpoll=native keeps the interval requested by the device
 	if (strstr (Text, "usbpoll=native"))	g_nUSBInterruptPollMs = 0;
@@ -1408,6 +1415,10 @@ void CKernel::SaveConfig (void)
 	{
 		strcat (Text, "multicore=off\r\n");
 	}
+	if (!m_bOverlay)
+	{
+		strcat (Text, "overlay=off\r\n");
+	}
 	if (g_nUSBInterruptPollMs == 0)
 	{
 		strcat (Text, "usbpoll=native\r\n");
@@ -1415,13 +1426,41 @@ void CKernel::SaveConfig (void)
 	WriteTextFile (CFG_PATH, Text);
 }
 
+// cpspi/overlay.png: a picture the size of the display shown around the game
+void CKernel::LoadOverlay (void)
+{
+	size_t nSize = 0;
+	char *pFile = LoadText (OVERLAY_PATH, &nSize);
+	if (pFile == 0)
+	{
+		Log ("Overlay: no cpspi/overlay.png, black around the picture", COLOR_DIM);
+		return;
+	}
+	unsigned w = 0, h = 0;
+	m_pOverlayRGB = cpspi_png_decode (pFile, nSize, &w, &h);
+	delete [] pFile;
+	char Line[MaxLineLen];
+	if (m_pOverlayRGB == 0)
+	{
+		Log ("Overlay: cpspi/overlay.png not usable (needs an 8 bit RGB or RGBA PNG, not interlaced)", COLOR_ERR);
+		return;
+	}
+	m_Video.SetOverlay (m_pOverlayRGB, w, h);
+	m_Video.EnableOverlay (m_bOverlay);
+	snprintf (Line, sizeof Line, "Overlay: cpspi/overlay.png %ux%u%s%s", w, h,
+		  (w != m_Video.GetWidth () || h != m_Video.GetHeight ()) ? ", scaled to the display" : "",
+		  m_bOverlay ? "" : " (off in cpspi.cfg)");
+	Log (Line, COLOR_TEXT);
+}
+
 void CKernel::RunSystemMenu (void)
 {
-	enum { SmAspect, SmFilter, SmControls, SmPower, SmCount };
+	enum { SmAspect, SmFilter, SmOverlay, SmControls, SmPower, SmCount };
 
 	unsigned nSel = 0;
 	u32 nPrev = ~0u;
 	unsigned nOldFilter = m_nFilter, nOldAspect = m_nAspect;
+	boolean bOldOverlay = m_bOverlay;
 	const char *pMsg = "";
 	unsigned nFrame = 0;
 
@@ -1464,6 +1503,18 @@ void CKernel::RunSystemMenu (void)
 				ApplyVideoMode ();
 				break;
 
+			case SmOverlay:
+				if (m_Video.HasOverlay ())
+				{
+					m_bOverlay = !m_bOverlay;
+					m_Video.EnableOverlay (m_bOverlay);
+				}
+				else
+				{
+					pMsg = "NO cpspi/overlay.png ON THE CARD";
+				}
+				break;
+
 			case SmControls:
 				if (nNew & BTN_1)
 				{
@@ -1495,7 +1546,7 @@ void CKernel::RunSystemMenu (void)
 			break;
 		}
 
-		static const char *Labels[SmCount] = {"PICTURE", "SCANLINES", "CONTROLS", "POWER OFF"};
+		static const char *Labels[SmCount] = {"PICTURE", "SCANLINES", "OVERLAY", "CONTROLS", "POWER OFF"};
 		TMenuItem Items[SmCount];
 		for (unsigned i = 0; i < SmCount; i++)
 		{
@@ -1507,6 +1558,7 @@ void CKernel::RunSystemMenu (void)
 		static const char *AspectLabels[ASPECT_COUNT] = {"4:3", "4:3 SHARP", "PIXEL"};
 		Items[SmAspect].pValue = AspectLabels[m_nAspect < ASPECT_COUNT ? m_nAspect : 0];
 		Items[SmFilter].pValue = FilterLabels[m_nFilter];
+		Items[SmOverlay].pValue = !m_Video.HasOverlay () ? "NONE" : (m_bOverlay ? "ON" : "OFF");
 
 		static const TButtonHint Hints[2] = {{'1', "CHANGE"}, {'2', "BACK"}};
 		m_pUI->DrawPanelMenu (m_nLoaded >= 0, "OPTIONS", Items, SmCount, nSel, pMsg, UI_VALUE,
@@ -1514,12 +1566,12 @@ void CKernel::RunSystemMenu (void)
 		ShowUIFrame ();
 	}
 
-	if (m_nFilter != nOldFilter || m_nAspect != nOldAspect)
+	if (m_nFilter != nOldFilter || m_nAspect != nOldAspect || m_bOverlay != bOldOverlay)
 	{
 		SaveConfig ();
 		char Line[120];
-		snprintf (Line, sizeof Line, "New settings: aspect %s, filter %s",
-			  AspectName (m_nAspect), FilterName (m_nFilter));
+		snprintf (Line, sizeof Line, "New settings: aspect %s, filter %s, overlay %s",
+			  AspectName (m_nAspect), FilterName (m_nFilter), m_bOverlay ? "on" : "off");
 		Log (Line, COLOR_TEXT);
 	}
 }
@@ -2395,6 +2447,7 @@ TShutdownMode CKernel::Run (void)
 	f_mkdir (NVRAM_DIR);
 	f_mkdir (SHOT_DIR);
 	LoadConfig ();
+	LoadOverlay ();
 
 	// the picture is written to the framebuffer by all four cores
 	if (!m_bMultiCore)
