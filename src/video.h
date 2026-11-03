@@ -116,6 +116,11 @@ public:
 	void ShowBuffer (unsigned nBuffer);	// show a buffer now
 	boolean Flip (void);			// show back buffer, swap roles
 	boolean WaitForVSync (void);
+	// Raw status of an HVS display channel (0-2): bits 0-11 the line being
+	// composed, 12-17 a frame counter, 30-31 the mode (2 = running). A
+	// diagnostic for now: which channel is the HDMI output and where the
+	// firmware's vsync notification falls in the frame
+	u32 ReadHVSStat (unsigned nChannel) const;
 
 private:
 	boolean Allocate (unsigned nWidth, unsigned nHeight);

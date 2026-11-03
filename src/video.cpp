@@ -10,6 +10,8 @@
 #include <circle/multicore.h>
 #include <circle/memory.h>
 #include <circle/timer.h>
+#include <circle/bcm2835.h>
+#include <circle/memio.h>
 
 #define PROPTAG_RELEASE_BUFFER	0x00048001
 #define PROPTAG_GET_PIXEL_ORDER	0x00040006	// 0 = BGR, 1 = RGB
@@ -722,4 +724,10 @@ boolean CVideoOut::Flip (void)
 boolean CVideoOut::WaitForVSync (void)
 {
 	return m_pFrameBuffer->WaitForVerticalSync ();
+}
+
+u32 CVideoOut::ReadHVSStat (unsigned nChannel) const
+{
+	// HVS at bus 0x7E400000; SCALER_DISPSTAT0/1/2 at 0x48, 0x58, 0x68
+	return read32 (ARM_IO_BASE + 0x400000 + 0x48 + (nChannel < 3 ? nChannel : 0) * 0x10);
 }

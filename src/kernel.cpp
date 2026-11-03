@@ -126,8 +126,13 @@ static boolean s_bLateChange;		// lag measurement: a pad report changed the
 static unsigned s_nLateChangeTicks;	// controls sampled at this vblank (its time)
 static unsigned s_nLastVSync;		// when the display's last vsync was seen
 static unsigned s_nInputMargin = 2000;	// controls sampled this long before the vsync (us)
+static unsigned s_nMarginBoost;		// added after vsyncs missed with the frame ready
 static unsigned s_tEmuEnd, s_tFlip, s_tSample;	// this frame: picture rendered, flipped, pads sampled
 static boolean s_bPresented;		// this frame went through CoreVBlank
+static unsigned s_nLateHooks;		// frames whose picture was not ready by the sample time
+static unsigned s_nMissUnexplained;	// vsyncs missed although the frame was ready in time
+static u32 s_HVSAtVSync[3], s_HVSAtSample[3];	// HVS channel status (diagnostic)
+static unsigned s_nReportLimit;		// frames per statistics window (short first window)
 
 // pad bits -> core flags; while Select is held only the joystick goes through
 static u32 GameFlags (u32 n)
@@ -166,6 +171,10 @@ void CKernel::CoreVBlank (void)
 
 	// the controls, as late as the vsync allows
 	unsigned nTarget = s_nLastVSync + FRAME_US - s_nInputMargin;
+	if ((int) (s_tFlip - nTarget) >= 0)
+	{
+		s_nLateHooks++;		// the frame cost more than the period minus the margin
+	}
 	while ((int) (CTimer::GetClockTicks () - nTarget) < 0)
 	{
 	}
@@ -187,6 +196,10 @@ void CKernel::CoreVBlank (void)
 		}
 	}
 	s_tSample = CTimer::GetClockTicks ();
+	for (unsigned c = 0; c < 3; c++)
+	{
+		s_HVSAtSample[c] = m_Video.ReadHVSStat (c);
+	}
 	s_bPresented = TRUE;
 }
 
@@ -352,7 +365,7 @@ CKernel::CKernel (void)
 	m_nFilter (FILTER_SCAN_MEDIUM),
 	m_bHVS (TRUE),
 	m_nAspect (ASPECT_43),
-	m_nInputMarginMin (1000),
+	m_nInputMarginMin (2000),
 	m_bMultiCore (TRUE)
 {
 	s_pThis = this;
@@ -1137,6 +1150,13 @@ void CKernel::ReportWindow (boolean bFinal)
 			  "picture ready %s/%s ms before vsync avg/min",
 			  ma, mn, mx, s_nInputMargin / 1000, (s_nInputMargin % 1000) / 100, px, sa, sm);
 		Log (Line, COLOR_TEXT);
+		snprintf (Line, sizeof Line,
+			  "   frames late for the controls %u, vsyncs missed with the frame ready %u | "
+			  "HVS at vsync 0:%08X 1:%08X 2:%08X, at controls 0:%08X 1:%08X 2:%08X",
+			  s_nLateHooks, s_nMissUnexplained,
+			  s_HVSAtVSync[0], s_HVSAtVSync[1], s_HVSAtVSync[2],
+			  s_HVSAtSample[0], s_HVSAtSample[1], s_HVSAtSample[2]);
+		Log (Line, COLOR_TEXT);
 	}
 	if (s_HistLag.nCount > 0)
 	{
@@ -1161,6 +1181,7 @@ void CKernel::ReportWindow (boolean bFinal)
 	s_HistMargin.Reset ();
 	s_HistPost.Reset ();
 	s_nOverBudget = s_nMissedVSync = s_nWindowFrames = 0;
+	s_nLateHooks = s_nMissUnexplained = 0;
 	s_nWindowStart = CTimer::GetClockTicks ();
 }
 
@@ -1257,9 +1278,9 @@ void CKernel::LoadConfig (void)
 	if (strstr (Text, "aspect=square"))		m_nAspect = ASPECT_PIXEL;
 	else if (strstr (Text, "aspect=4:3sharp"))	m_nAspect = ASPECT_43_SHARP;
 	else if (strstr (Text, "aspect=4:3"))		m_nAspect = ASPECT_43;
-	// inputmargin=N (milliseconds, one decimal allowed, e.g. 1.5): the
-	// controls are read at least this long before the vsync (1.0 unless
-	// set; raise it if the log shows missed vsyncs with the frame time fine)
+	// inputmargin=N (milliseconds, one decimal allowed, e.g. 2.5): the
+	// controls are read at least this long before the vsync (2.0 unless
+	// set; it also grows by itself after vsyncs missed with the frame ready)
 	const char *pIM = strstr (Text, "inputmargin=");
 	if (pIM)
 	{
@@ -1288,7 +1309,7 @@ void CKernel::SaveConfig (void)
 	char Text[240];
 	snprintf (Text, sizeof Text, "aspect=%s\r\nfilter=%s\r\n%s", AspectName (m_nAspect),
 		  FilterName (m_nFilter), m_bHVS ? "" : "scaler=cpu\r\n");
-	if (m_nInputMarginMin != 1000)
+	if (m_nInputMarginMin != 2000)
 	{
 		char IM[32];
 		snprintf (IM, sizeof IM, "inputmargin=%u.%u\r\n", m_nInputMarginMin / 1000,
@@ -1707,6 +1728,7 @@ void CKernel::ResetGameStats (void)
 	s_HistPeriod.Reset (); s_HistLag.Reset (); s_HistSlack.Reset ();
 	s_HistMargin.Reset (); s_HistPost.Reset ();
 	s_nOverBudget = s_nMissedVSync = s_nWindowFrames = 0;
+	s_nLateHooks = s_nMissUnexplained = 0;
 }
 
 // Credits over the paused game; 2 (or Esc) goes back to the game
@@ -1783,8 +1805,10 @@ void CKernel::RunGame (void)
 
 	// the controls go in at the core's vblank (CoreVBlank), as late before
 	// the vsync as the margin allows: start cautious, then from what is measured
-	s_nInputMargin = m_nInputMarginMin > 2000 ? m_nInputMarginMin : 2000;
+	s_nInputMargin = m_nInputMarginMin > 3000 ? m_nInputMarginMin : 3000;
+	s_nMarginBoost = 0;
 	s_nLastVSync = nLastVSync;
+	s_nReportLimit = 900;			// a first statistics window after 15 s, then per minute
 	for (unsigned p = 0; p < CORE_MAX_PLAYERS; p++)
 	{
 		s_LateIgnore[p] = TRUE;
@@ -2093,7 +2117,12 @@ void CKernel::RunGame (void)
 			nNextDeadline += FRAME_US;
 		}
 		unsigned t4 = CTimer::GetClockTicks ();
+		for (unsigned c = 0; c < 3; c++)
+		{
+			s_HVSAtVSync[c] = m_Video.ReadHVSStat (c);
+		}
 		unsigned nPeriod = t4 - nLastVSync;
+		unsigned nPredicted = nLastVSync + FRAME_US;	// where this vsync was expected
 		nLastVSync = t4;
 		s_nLastVSync = t4;
 		nTotalFrames++;
@@ -2101,6 +2130,17 @@ void CKernel::RunGame (void)
 		if (s_bPresented)
 		{
 			unsigned nPost = tRet - s_tSample;		// handler lines + return, after the controls
+			if (nPeriod > 25000 && (int) (s_tFlip - (nPredicted - s_nInputMargin)) <= 0)
+			{
+				// the picture was ready and the controls read in time, yet the
+				// vsync notification came a frame late: read the controls earlier
+				s_nMissUnexplained++;
+				if (s_nMarginBoost < 3000)
+				{
+					s_nMarginBoost += 500;
+					s_nInputMargin += 500;
+				}
+			}
 			s_HistEmu.Add (s_tEmuEnd - t0);
 			s_HistRender.Add (core_render_us ());
 			s_HistWork.Add (s_tFlip - t0);
@@ -2119,10 +2159,12 @@ void CKernel::RunGame (void)
 			if (s_tFlip - t0 > 16000) s_nOverBudget++;
 			if (nPeriod > 25000) s_nMissedVSync++;
 			s_nWindowFrames++;
-			if (s_nWindowFrames >= REPORT_FRAMES)
+			if (s_nWindowFrames >= s_nReportLimit)
 			{
 				ReportWindow (FALSE);
 				m_pInput->FlushDiagnostics ();
+				s_nReportLimit = REPORT_FRAMES;
+				SaveLog ();		// the log survives a power cut (one write per minute)
 			}
 			// status line: the worst frame of the second
 			if (s_tFlip - t0 > nWorkMax)
@@ -2164,6 +2206,7 @@ void CKernel::RunGame (void)
 			// handler's lines and the vsync's own jitter; never under the minimum
 			unsigned nMargin = nPostMax * 2 + 500;
 			if (nMargin < m_nInputMarginMin) nMargin = m_nInputMarginMin;
+			nMargin += s_nMarginBoost;
 			if (nMargin > 5000) nMargin = 5000;
 			s_nInputMargin = nMargin;
 			nPostMax = 0;

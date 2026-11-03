@@ -9,9 +9,13 @@
  * Latency: the DMA takes CHUNK_SIZE / 2 frames at a time, so the queue must
  * never hold less than that when a chunk is fetched; one frame of sound
  * (805) arrives at a time and is consumed over the frame, so the level
- * swings by that much. TARGET = chunk + frame + a little; with 4 ms chunks
- * that is ~25 ms of queue plus the chunk in flight: about 28 ms from the
- * chip to the HDMI output (it was ~49 ms with 16 ms chunks).
+ * measured before a write is the low point of the cycle. A display frame
+ * lost (a late vsync, a file written) costs another 805, and the queue must
+ * absorb one of those without a gap and without a fast correction, which
+ * detunes the music: TARGET = frame + frame + chunk and the strong
+ * correction only near empty. About 35 ms from the chip to the HDMI output
+ * (it was ~49 ms with 16 ms chunks); audio that late after the picture is
+ * below what anyone can notice.
  */
 #include "audio.h"
 #include <circle/util.h>
@@ -19,8 +23,10 @@
 #define SAMPLE_RATE	48000
 #define CHUNK_SIZE	(384 * 1)		// words per DMA chunk (multiple of 384): 192 frames, 4 ms
 #define QUEUE_FRAMES	4800			// 100 ms queue capacity
-#define TARGET_FRAMES	1200			// ~25 ms queued
-#define BAND_FRAMES	350
+#define TARGET_FRAMES	1500			// ~31 ms queued at the low point
+#define BAND_FRAMES	400
+#define STRONG_LOW	500			// below: 1% stretch (gap imminent)
+#define STRONG_HIGH	3500			// above: 1% shrink
 
 CAudioOut::CAudioOut (void)
 :	m_pSound (0),
@@ -93,15 +99,17 @@ void CAudioOut::WriteFrame (const s16 *pSamples, unsigned nFrames)
 		m_nUnderruns++;
 	}
 
-	// proportional correction: at most 1% of the block
+	// correction: 0.25% of the block (inaudible) while the level is off the
+	// band, 1% only when a gap or an overflow is close; a lost display frame
+	// is thus recovered over a few seconds without a change of pitch
 	int nDelta = 0;
 	if (nQueued + BAND_FRAMES < TARGET_FRAMES)
 	{
-		nDelta = nQueued < TARGET_FRAMES / 2 ? 8 : 2;		// stretch
+		nDelta = nQueued < STRONG_LOW ? 8 : 2;			// stretch
 	}
 	else if (nQueued > TARGET_FRAMES + BAND_FRAMES)
 	{
-		nDelta = nQueued > 2 * TARGET_FRAMES ? -8 : -2;		// shrink
+		nDelta = nQueued > STRONG_HIGH ? -8 : -2;		// shrink
 	}
 	m_nAdjust += nDelta;
 

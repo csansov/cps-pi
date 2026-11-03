@@ -68,8 +68,9 @@ vblank callback order and the board's timing).
 - The board's input timing. The core's vblank callback hands the finished
   picture and sound of the frame to the kernel *before* raising the
   interrupt whose handler reads the input ports; the kernel flips the
-  picture, waits until the display's vsync is about a millisecond away,
-  samples the pads at that moment and only then lets the handler run. The
+  picture, waits until the display's vsync is about two milliseconds away
+  (the margin adapts to what is measured), samples the pads at that moment
+  and only then lets the handler run. The
   game reads controls as fresh as on the board (which reads its ports at
   its own vblank, 1.4 ms before the next frame), the emulation of the next
   frame starts right at the vsync, and nothing needs tuning: the slow part
@@ -79,9 +80,10 @@ vblank callback order and the board's timing).
 - The four cores write the picture to the framebuffer (a quarter each),
   about 1.5 ms instead of 4.5 on a Pi 3; the core's own sprite renderer has
   a 1:1 fast path for every tile and object.
-- HDMI audio at 48 kHz, about 28 ms from the chip to the output; the chips
-  run at their native 44.1 kHz (YM2151 + OKI) or 24 kHz (QSound) and are
-  resampled.
+- HDMI audio at 48 kHz, about 35 ms from the chip to the output (a queue
+  that absorbs a lost display frame without a gap or a change of pitch);
+  the chips run at their native 44.1 kHz (YM2151 + OKI) or 24 kHz (QSound)
+  and are resampled.
 - USB gamepads (six buttons, Start, Select) and keyboard, USB polled every
   1 ms, per-model control set-up saved in `cpspi/pads.cfg`.
 - In-game menu (hold Select for a second, or Esc): reset, service menu (the
@@ -90,13 +92,14 @@ vblank callback order and the board's timing).
   Select+3 the credits. A short Select press inserts a coin.
 - OPTIONS from the game list (button 4): picture 4:3 or pixel, scanlines,
   controls, power off; saved in `cpspi/cpspi.cfg` (`aspect=`, `filter=`,
-  `scaler=cpu`, `usbpoll=native`; by hand: `inputmargin=1.5` to read the
-  controls earlier before the vsync if the log shows missed vsyncs with
-  normal frame times, `multicore=off` to draw on core 0 alone).
-- EEPROM contents saved in `cpspi/nvram`, diagnostics in `cpspi/LOG.TXT`
-  (per minute: frame, render and draw times, how long before the vsync the
-  controls were read, pad report to game latency, audio queue), benchmark
-  and sampling profiler with an empty `cpspi/BENCH` file.
+  `scaler=cpu`, `usbpoll=native`; by hand: `inputmargin=2.5` to read the
+  controls earlier before the vsync, `multicore=off` to draw on core 0
+  alone).
+- EEPROM contents saved in `cpspi/nvram`, diagnostics in `cpspi/LOG.TXT`,
+  written after 15 s of play and then every minute (frame, render and draw
+  times, how long before the vsync the controls were read, pad report to
+  game latency, audio queue), benchmark and sampling profiler with an empty
+  `cpspi/BENCH` file.
 
 Not yet: save states, DIP switch editor, vertical games drawn upright (they
 run, but sideways), Pi 4 kernel.
