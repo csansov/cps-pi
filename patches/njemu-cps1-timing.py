@@ -8,7 +8,9 @@ timing of the real board.
    (dist/sd/config.txt) and the sound is produced for it.
 2. cps1/timer.c: the 68000 clock comes from lr_m68k_clock() (njemu_pi.c):
    10 MHz on the original CPS1, 12 MHz on the later boards (CPS-Dash and the
-   QSound games), as MAME lists them; NJEMU had 10 MHz for every game.
+   QSound games), as MAME lists them, less the share that stands in for the
+   board's wait states; NJEMU had 10 MHz for every game. timer_set_m68k_clock()
+   applies it at reset and whenever the share changes while playing.
 
     python patches/njemu-cps1-timing.py build/rpi3/njemu
 """
@@ -46,6 +48,15 @@ patch("emucfg.h",
 patch("cps1/timer.c",
       "\tcpu[CPU_M68000].usec_to_cycles = 10000000.0/1000000.0;\n"
       "\tcpu[CPU_M68000].cycles_to_usec = 1000000.0/10000000.0;\n",
-      "\tcpu[CPU_M68000].usec_to_cycles = lr_m68k_clock()/1000000.0;\t/* cps-pi: 10 or 12 MHz */\n"
-      "\tcpu[CPU_M68000].cycles_to_usec = 1000000.0/lr_m68k_clock();\n",
+      "\ttimer_set_m68k_clock();\t/* cps-pi: 10 or 12 MHz, less the wait states' share */\n",
       "68000 clock")
+
+patch("cps1/timer.c",
+      "void timer_reset(void)\n{\n",
+      "/* cps-pi: the 68000 clock from lr_m68k_clock() (njemu_pi.c), at reset and\n"
+      "   whenever the share of the clock changes while the game runs */\n"
+      "void timer_set_m68k_clock(void)\n{\n"
+      "\tcpu[CPU_M68000].usec_to_cycles = lr_m68k_clock()/1000000.0;\n"
+      "\tcpu[CPU_M68000].cycles_to_usec = 1000000.0/lr_m68k_clock();\n}\n\n"
+      "void timer_reset(void)\n{\n",
+      "timer_reset")

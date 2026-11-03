@@ -84,6 +84,13 @@ void core_set_dips (unsigned a, unsigned b, unsigned c);
 int core_qsound (void);
 /* 68000 clock of the loaded game in MHz (10, or 12 on the later boards) */
 unsigned core_m68k_mhz (void);
+/* share of that clock the 68000 actually gets (percent): the CPS-A/B stall
+   the CPU on its graphics accesses and during their DMA, which is not
+   emulated, so the games run faster than the boards; a fraction of the
+   clock stands in for it, per game by default (core_set_cpu_percent (0))
+   or as set; applies at once to the running game */
+unsigned core_cpu_percent (void);
+void core_set_cpu_percent (unsigned percent);
 const char *core_game_name (void);
 
 #ifdef __cplusplus

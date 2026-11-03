@@ -582,7 +582,7 @@ static int in_list(const char *const *list, const char *name)
 	return 0;
 }
 
-double lr_m68k_clock(void)
+static double m68k_nominal_clock(void)
 {
 	if (in_list(s_10mhz_sets, game_name)) return 10000000.0;
 	if (in_list(s_12mhz_sets, game_name)) return 12000000.0;
@@ -591,9 +591,52 @@ double lr_m68k_clock(void)
 	return 10000000.0;
 }
 
+/* The CPS-A/B stall the 68000 on its accesses to the graphics RAM and during
+   their DMA; no emulator reproduces those wait states (MAME Testers 408, open
+   since 2008), so the games run faster than the boards: the Street Fighter II
+   games visibly so, Hyper Fighting most. Until the stalls are emulated the
+   68000 gets a share of its clock, per game, from what PCB owners measured
+   against MAME (65% for Hyper Fighting); cpu= / cpu.<set>= in cpspi.cfg and
+   the in-game menu set it. Families by set name prefix (sf2hf before sf2),
+   then by parent. */
+static const struct { const char *prefix; unsigned percent; } s_cpu_defaults[] = {
+	{"sf2hf", 65},
+	{"sf2ce", 75},
+	{"sf2",   75},
+	{NULL, 100}
+};
+static unsigned s_cpu_override;		/* 0: the table */
+
+static unsigned cpu_default_percent(const char *name)
+{
+	for (unsigned i = 0; s_cpu_defaults[i].prefix; i++)
+		if (strncmp(name, s_cpu_defaults[i].prefix, strlen(s_cpu_defaults[i].prefix)) == 0)
+			return s_cpu_defaults[i].percent;
+	return 0;
+}
+
+unsigned core_cpu_percent(void)
+{
+	if (s_cpu_override) return s_cpu_override;
+	unsigned p = cpu_default_percent(game_name);
+	if (!p && parent_name[0]) p = cpu_default_percent(parent_name);
+	return p ? p : 100;
+}
+
+double lr_m68k_clock(void)
+{
+	return m68k_nominal_clock() * core_cpu_percent() / 100.0;
+}
+
+void core_set_cpu_percent(unsigned percent)
+{
+	s_cpu_override = percent >= 30 && percent <= 150 ? percent : 0;
+	if (s_loaded) timer_set_m68k_clock();
+}
+
 unsigned core_m68k_mhz(void)
 {
-	return (unsigned)(lr_m68k_clock() / 1000000.0);
+	return (unsigned)(m68k_nominal_clock() / 1000000.0);
 }
 
 uint32_t poll_gamepad(void) { return 0; }

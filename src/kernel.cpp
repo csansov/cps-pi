@@ -62,7 +62,7 @@ void cpspi_png_free_rgb (void *p);
 
 CKernel *CKernel::s_pThis = 0;
 
-enum { GmReset, GmService, GmList, GmPower, GmCount };
+enum { GmReset, GmSpeed, GmService, GmList, GmPower, GmCount };
 
 // ---- C interface used by the shim and the core glue ------------------------
 
@@ -433,7 +433,9 @@ CKernel::CKernel (void)
 	m_nInputMarginMin (0),
 	m_bMultiCore (TRUE),
 	m_bOverlay (TRUE),
-	m_pOverlayRGB (0)
+	m_pOverlayRGB (0),
+	m_nCpuPercent (0),
+	m_nCpuSets (0)
 {
 	s_pThis = this;
 	m_LastRaw[0] = '\0';
@@ -849,6 +851,7 @@ boolean CKernel::LoadGame (unsigned nIndex)
 	}
 
 	unsigned nStart = CTimer::GetClockTicks ();
+	core_set_cpu_percent (CpuPercentFor (G.File));	// 0: the core's default for the game
 	if (!core_load (G.File))
 	{
 		snprintf (Line, sizeof Line, "  load failed: %s", core_error ());
@@ -856,9 +859,11 @@ boolean CKernel::LoadGame (unsigned nIndex)
 		return FALSE;
 	}
 	unsigned nMs = (CTimer::GetClockTicks () - nStart) / 1000;
-	snprintf (Line, sizeof Line, "  loaded in %u ms: %u players, %u buttons, 68000 at %u MHz, %s%s", nMs,
-		  core_players (), core_buttons (), core_m68k_mhz (), core_qsound () ? "QSound" : "YM2151 + OKI",
-		  core_vertical () ? ", vertical screen" : "");
+	unsigned nPercent = core_cpu_percent ();
+	unsigned nEff = core_m68k_mhz () * 100 * nPercent / 100;	// in 1/100 MHz
+	snprintf (Line, sizeof Line, "  loaded in %u ms: %u players, %u buttons, 68000 at %u MHz run at %u%% (%u.%02u MHz, the wait states), %s%s", nMs,
+		  core_players (), core_buttons (), core_m68k_mhz (), nPercent, nEff / 100, nEff % 100,
+		  core_qsound () ? "QSound" : "YM2151 + OKI", core_vertical () ? ", vertical screen" : "");
 	Log (Line, COLOR_DIM);
 	m_nLoaded = (int) nIndex;
 	m_nShots = 0;					// screenshot numbers: next free one
@@ -1383,6 +1388,36 @@ void CKernel::LoadConfig (void)
 	if (strstr (Text, "multicore=off"))	m_bMultiCore = FALSE;
 	// overlay=off: black around the picture even if cpspi/overlay.png exists
 	if (strstr (Text, "overlay=off"))	m_bOverlay = FALSE;
+	// cpu=NN: the 68000 runs at NN% of its clock in every game (the wait
+	// states of the board, which are not emulated); cpu.<set>=NN per set
+	for (const char *p = Text; (p = strstr (p, "cpu")) != 0; p++)
+	{
+		if (p != Text && p[-1] != '\n')
+		{
+			continue;
+		}
+		if (p[3] == '=')
+		{
+			unsigned n = (unsigned) atoi (p + 4);
+			if (n >= 30 && n <= 150) m_nCpuPercent = n;
+		}
+		else if (p[3] == '.')
+		{
+			char Set[16];
+			unsigned i = 0;
+			const char *q = p + 4;
+			while (*q && *q != '=' && *q != '\r' && *q != '\n' && i < sizeof Set - 1)
+			{
+				Set[i++] = *q++;
+			}
+			Set[i] = '\0';
+			if (*q == '=')
+			{
+				unsigned n = (unsigned) atoi (q + 1);
+				if (n >= 30 && n <= 150) SetCpuPercentFor (Set, n);
+			}
+		}
+	}
 	// USB pads are polled every 1 ms (like usbhid.jspoll=1 on Linux);
 	// usbpoll=native keeps the interval requested by the device
 	if (strstr (Text, "usbpoll=native"))	g_nUSBInterruptPollMs = 0;
@@ -1401,7 +1436,7 @@ void CKernel::LoadConfig (void)
 
 void CKernel::SaveConfig (void)
 {
-	char Text[240];
+	char Text[240 + MaxCpuSets * 40];
 	snprintf (Text, sizeof Text, "aspect=%s\r\nfilter=%s\r\n%s", AspectName (m_nAspect),
 		  FilterName (m_nFilter), m_bHVS ? "" : "scaler=cpu\r\n");
 	if (m_nInputMarginMin != 0)
@@ -1423,7 +1458,53 @@ void CKernel::SaveConfig (void)
 	{
 		strcat (Text, "usbpoll=native\r\n");
 	}
+	if (m_nCpuPercent)
+	{
+		char Cpu[24];
+		snprintf (Cpu, sizeof Cpu, "cpu=%u\r\n", m_nCpuPercent);
+		strcat (Text, Cpu);
+	}
+	for (unsigned i = 0; i < m_nCpuSets; i++)
+	{
+		char Cpu[40];
+		snprintf (Cpu, sizeof Cpu, "cpu.%s=%u\r\n", m_CpuSets[i].Set, m_CpuSets[i].nPercent);
+		if (strlen (Text) + strlen (Cpu) < sizeof Text - 1)
+		{
+			strcat (Text, Cpu);
+		}
+	}
 	WriteTextFile (CFG_PATH, Text);
+}
+
+unsigned CKernel::CpuPercentFor (const char *pSet) const
+{
+	for (unsigned i = 0; i < m_nCpuSets; i++)
+	{
+		if (strcmp (m_CpuSets[i].Set, pSet) == 0)
+		{
+			return m_CpuSets[i].nPercent;
+		}
+	}
+	return m_nCpuPercent;		// 0: the core's default for the game
+}
+
+void CKernel::SetCpuPercentFor (const char *pSet, unsigned nPercent)
+{
+	for (unsigned i = 0; i < m_nCpuSets; i++)
+	{
+		if (strcmp (m_CpuSets[i].Set, pSet) == 0)
+		{
+			m_CpuSets[i].nPercent = nPercent;
+			return;
+		}
+	}
+	if (m_nCpuSets < MaxCpuSets)
+	{
+		strncpy (m_CpuSets[m_nCpuSets].Set, pSet, sizeof m_CpuSets[0].Set - 1);
+		m_CpuSets[m_nCpuSets].Set[sizeof m_CpuSets[0].Set - 1] = '\0';
+		m_CpuSets[m_nCpuSets].nPercent = nPercent;
+		m_nCpuSets++;
+	}
 }
 
 // cpspi/overlay.png: a picture the size of the display shown around the game
@@ -1919,6 +2000,8 @@ void CKernel::RunGame (void)
 	unsigned nMenuSel = 0;
 	char MenuMsg[40] = "";
 	u32 nMenuMsgColor = UI_OK;
+	boolean bCpuChanged = FALSE;		// CPU SPEED changed in the menu: save on resume
+	char MsgLine[MaxLineLen];
 
 	u32 nPrev[CORE_MAX_PLAYERS];
 	boolean bSelectCombo[CORE_MAX_PLAYERS];
@@ -2180,9 +2263,30 @@ void CKernel::RunGame (void)
 			if (nNew & BTN_UP)	{ nMenuSel = (nMenuSel + GmCount - 1) % GmCount; MenuMsg[0] = '\0'; }
 			if (nNew & BTN_DOWN)	{ nMenuSel = (nMenuSel + 1) % GmCount; MenuMsg[0] = '\0'; }
 
+			if (nMenuSel == GmSpeed && (nNew & (BTN_LEFT | BTN_RIGHT | BTN_1)))
+			{
+				// the 68000's share of its clock, 5% at a time, kept for this set
+				int nDir = (nNew & BTN_LEFT) ? -5 : 5;
+				int nPercent = (int) core_cpu_percent () + nDir;
+				if (nPercent < 50) nPercent = 50;
+				if (nPercent > 100) nPercent = 100;
+				core_set_cpu_percent ((unsigned) nPercent);
+				SetCpuPercentFor (m_pGames[m_nLoaded].File, (unsigned) nPercent);
+				bCpuChanged = TRUE;
+				nNew &= ~BTN_1;
+			}
+
 			if (nNew & BTN_2)
 			{
 				bMenu = FALSE;		// resume
+				if (bCpuChanged)
+				{
+					SaveConfig ();
+					bCpuChanged = FALSE;
+					snprintf (MsgLine, sizeof MsgLine, "  68000 at %u%% of its clock for %s (cpspi.cfg)",
+						  core_cpu_percent (), m_pGames[m_nLoaded].File);
+					Log (MsgLine, COLOR_TEXT);
+				}
 			}
 			else if (nNew & BTN_1)
 			{
@@ -2230,7 +2334,7 @@ void CKernel::RunGame (void)
 			{
 				static const char *Labels[GmCount] =
 				{
-					"RESET", "SERVICE MENU", "GAME LIST", "POWER OFF"
+					"RESET", "CPU SPEED", "SERVICE MENU", "GAME LIST", "POWER OFF"
 				};
 				TMenuItem Items[GmCount];
 				for (unsigned i = 0; i < GmCount; i++)
@@ -2239,11 +2343,19 @@ void CKernel::RunGame (void)
 					Items[i].pValue = 0;
 					Items[i].bDisabled = FALSE;
 				}
+				char Speed[20];
+				snprintf (Speed, sizeof Speed, "%u%%", core_cpu_percent ());
+				Items[GmSpeed].pValue = Speed;
 				const char *pMsg = MenuMsg;
 				u32 nMsgColor = nMenuMsgColor;
 				if (!MenuMsg[0] && nMenuSel == GmService)
 				{
 					pMsg = "DIP SWITCHES AND TESTS";
+					nMsgColor = UI_DIM;
+				}
+				else if (!MenuMsg[0] && nMenuSel == GmSpeed)
+				{
+					pMsg = "LOWER = MORE LIKE THE BOARD'S WAIT STATES";
 					nMsgColor = UI_DIM;
 				}
 				static const TButtonHint Hints[2] = {{'1', "SELECT"}, {'2', "RESUME"}};

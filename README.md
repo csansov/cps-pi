@@ -65,6 +65,16 @@ vblank callback order and the board's timing).
   12 MHz on the sets MAME lists with that clock (the CPS-Dash family:
   Street Fighter II' and later, the QSound games, Pang! 3 ...), 10 MHz on
   the rest.
+- The board's wait states, approximately. The CPS-A/B chips stall the
+  68000 on its accesses to the graphics RAM and during their DMA; no
+  emulator reproduces that (MAME Testers 408, open since 2008), so the
+  games run faster than the boards: the Street Fighter II games visibly,
+  Hyper Fighting most. Until the stalls are emulated, the 68000 gets a
+  share of its clock per game (65% for Hyper Fighting, 75% for World
+  Warrior and Champion Edition, 100% elsewhere), which PCB owners found
+  brings MAME to the board's speed. The in-game menu's CPU SPEED item
+  changes it 5% at a time while playing and keeps it per set
+  (`cpu.<set>=NN` in `cpspi.cfg`; `cpu=NN` for every game).
 - The board's input timing. The core's vblank callback hands the finished
   picture of the frame to the kernel *before* raising the interrupt whose
   handler reads the input ports; the kernel flips the picture, waits until

@@ -151,6 +151,14 @@ private:
 	boolean			 m_bMultiCore;	// FALSE: multicore=off, core 0 draws alone
 	boolean			 m_bOverlay;	// the bezel (cpspi/overlay.png) around the picture
 	u8			*m_pOverlayRGB;	// the decoded bezel
+	// 68000 share of its clock (percent, 0 = the core's per-game default):
+	// cpu=NN for every game, cpu.<set>=NN per set (also set from the menu)
+	unsigned		 m_nCpuPercent;
+	enum { MaxCpuSets = 32 };
+	struct { char Set[16]; unsigned nPercent; } m_CpuSets[MaxCpuSets];
+	unsigned		 m_nCpuSets;
+	unsigned CpuPercentFor (const char *pSet) const;
+	void SetCpuPercentFor (const char *pSet, unsigned nPercent);
 
 	static CKernel		*s_pThis;
 };
