@@ -681,7 +681,7 @@ const char *CKernel::TitleOf (const char *pName) const
 }
 
 // The zips in cpspi/roms that the core's database knows (FILENAME( name,
-// parent, ... ) lines of rominfo.cps1); a clone needs its parent zip too.
+// parent, ... ) lines of rominfo.<system>); a clone needs its parent zip, or its ROMs inside (merged set).
 void CKernel::ScanGames (void)
 {
 	m_pGames = new TGameEntry[MaxGames];
@@ -780,10 +780,11 @@ void CKernel::ScanGames (void)
 			snprintf (Path, sizeof Path, "%s/%s.zip", ROMS_DIR, pSet->Parent);
 			if (f_stat (Path, &PInfo) != FR_OK)
 			{
-				snprintf (Line, sizeof Line, "  %s: clone of %s, %s.zip missing, skipped",
+				// the core looks for every ROM in the game's own zip first
+				// (by CRC), then in the parent's: a merged set loads alone
+				snprintf (Line, sizeof Line, "  %s: clone of %s without %s.zip: loads only if it is a merged set",
 					  Info.fname, pSet->Parent, pSet->Parent);
-				Log (Line, COLOR_ERR);
-				continue;
+				Log (Line, COLOR_DIM);
 			}
 		}
 
